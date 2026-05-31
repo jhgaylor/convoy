@@ -49,16 +49,25 @@ spec:
           ports:
             - name: http
               containerPort: 4000
+          # Host: localhost is in force_ssl's exclude list (config/prod.exs), so
+          # probes get a plain 200 instead of a 301→https redirect. Real traffic
+          # arrives via Traefik with X-Forwarded-Proto: https and serves normally.
           readinessProbe:
             httpGet:
               path: /
               port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /
               port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
             initialDelaySeconds: 15
             periodSeconds: 30
             timeoutSeconds: 5
