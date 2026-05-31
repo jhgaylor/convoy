@@ -31,7 +31,7 @@ defmodule Convoy.Engine.Wasm do
   | 3 | move toward base |
   | 4 | move toward nearest resource |
   | 5 | wander (deterministic) |
-  | 6 | move toward farthest resource |
+  | 6 | move toward the resource farthest from base |
   | 10/11/12/13 | move +x / -x / +y / -y |
   | anything else (incl. 0) | idle |
 
@@ -200,7 +200,10 @@ defmodule Convoy.Engine.Wasm do
 
   defp code_to_intent(4, e, w), do: seek(e, w, World.nearest_resource(w, {e.x, e.y}))
   defp code_to_intent(5, e, w), do: {:move, World.wander_dir(w.seed, w.tick, e.id)}
-  defp code_to_intent(6, e, w), do: seek(e, w, World.farthest_resource(w, {e.x, e.y}))
+  # Farthest is measured from the BASE, not the harvester — a fixed reference, so
+  # the target stays put as the harvester approaches (no oscillation between two
+  # nodes). Nearest (code 4) is harvester-relative and stable on its own.
+  defp code_to_intent(6, e, w), do: seek(e, w, World.farthest_resource(w, w.base))
   defp code_to_intent(10, _e, _w), do: {:move, {1, 0}}
   defp code_to_intent(11, _e, _w), do: {:move, {-1, 0}}
   defp code_to_intent(12, _e, _w), do: {:move, {0, 1}}

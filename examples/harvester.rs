@@ -3,7 +3,7 @@
 //
 // Export `decide`; return an intent code:
 //   1 harvest · 2 unload · 3 to_base · 4 to_resource (nearest) · 5 wander
-//   6 to_far_resource (farthest) · 10/11/12/13 move +x/-x/+y/-y · else idle
+//   6 to_far_resource (farthest from base) · 10/11/12/13 move ±x/±y · else idle
 #![no_std]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
@@ -29,5 +29,5 @@ pub extern "C" fn decide(
     if on_resource != 0 {
         return 1; // harvest
     }
-    6 // seek the FARTHEST ore first, then work back toward base
+    6 // seek the deposit FARTHEST from base first, then work back inward
 }

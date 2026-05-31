@@ -511,7 +511,7 @@ defmodule ConvoyWeb.SimLive do
        res_dx, res_dy, base_dx, base_dy, tick) -> code</pre>
         <div>
           <div class="text-slate-300">return code → intent</div>
-          <code class="text-fuchsia-300">1 harvest · 2 unload · 3 to_base · 4 to_resource · 5 wander · 6 to_far_resource · 10-13 move ±x/±y · else idle</code>
+          <code class="text-fuchsia-300">1 harvest · 2 unload · 3 to_base · 4 to_resource · 5 wander · 6 to_far_resource (from base) · 10-13 move ±x/±y · else idle</code>
         </div>
       </div>
     </details>

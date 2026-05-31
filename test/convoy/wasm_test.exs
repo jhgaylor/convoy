@@ -109,9 +109,8 @@ defmodule Convoy.WasmTest do
   test "intent code 6 routes toward the farthest resource, code 4 toward the nearest" do
     seek = fn code -> "(module (func (export \"decide\") #{@abi} (i32.const #{code})))" end
 
-    # Near node is east (1,0); far node is south (0,10) — different directions,
-    # so the first step distinguishes "nearest" from "farthest".
-    world = %{World.generate(seed: 1) | resources: %{{1, 0} => 5, {0, 10} => 5}}
+    # Base at (0,0). Near node east (1,0); far-from-base node south (0,10).
+    world = %{World.generate(seed: 1) | base: {0, 0}, resources: %{{1, 0} => 5, {0, 10} => 5}}
     e = %{id: 1, x: 0, y: 0, cargo: 0, cargo_max: 5, last_action: :idle}
 
     {:ok, near} = Wasm.instantiate(seek.(4))
@@ -122,6 +121,22 @@ defmodule Convoy.WasmTest do
 
     Wasm.stop(near)
     Wasm.stop(far)
+  end
+
+  # Regression: code 6 measures distance from BASE, not the harvester, so the
+  # target doesn't flip as the harvester approaches it (no oscillation loop).
+  test "code 6 keeps heading to the far node instead of turning back" do
+    far = "(module (func (export \"decide\") #{@abi} (i32.const 6)))"
+    {:ok, inst} = Wasm.instantiate(far)
+
+    # Base (0,0). Near node (2,0); far-from-base node (10,0). Harvester sits at
+    # (9,0) — almost on the far node. Farthest-from-*harvester* would be the near
+    # node (turn back); farthest-from-*base* is still (10,0) (keep going).
+    world = %{World.generate(seed: 1) | base: {0, 0}, resources: %{{2, 0} => 5, {10, 0} => 5}}
+    e = %{id: 1, x: 9, y: 0, cargo: 0, cargo_max: 5, last_action: :idle}
+
+    assert {:ok, {:move, {1, 0}}, _} = Wasm.decide(inst, e, world, 50_000)
+    Wasm.stop(inst)
   end
 
   # The payoff: the WAT harvester reproduces the rule-DSL behaviour exactly.
