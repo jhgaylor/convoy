@@ -62,7 +62,10 @@ defmodule Convoy.MixProject do
       {:bandit, "~> 1.5"},
       # WASM execution tier (primer §7) — wraps Wasmtime, exposes fuel metering.
       # Ships precompiled NIFs via rustler_precompiled, so no local Rust needed.
-      {:wasmex, "~> 0.14.0"}
+      {:wasmex, "~> 0.14.0"},
+      # File watching for `mix convoy.run --watch` (already transitively present
+      # via phoenix_live_reload; named directly so the CLI compiles cleanly).
+      {:file_system, "~> 1.0"}
     ]
   end
 

@@ -27,7 +27,8 @@ defmodule ConvoyWeb.RegionController do
   }
 
   def load(conn, %{"id" => id} = params) do
-    Engine.ensure_region(id)
+    # CLI-driven regions are durable so a deploy resumes them.
+    Engine.ensure_region(id, persist: true)
 
     with {:ok, lang} <- fetch_language(params),
          {:ok, source} <- fetch_source(params),

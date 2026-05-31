@@ -10,6 +10,10 @@ config :convoy, ConvoyWeb.Endpoint,
 # Print only warnings and errors during test
 config :logger, level: :warning
 
+# Isolate persistence in tests and don't auto-restore regions on boot.
+config :convoy, Convoy.Persistence, dir: Path.join(System.tmp_dir!(), "convoy-test-regions")
+config :convoy, :restore_on_boot, false
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 

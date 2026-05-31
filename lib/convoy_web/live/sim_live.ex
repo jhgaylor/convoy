@@ -39,7 +39,8 @@ defmodule ConvoyWeb.SimLive do
     id = region_id(params)
     named? = named_region?(params)
     seed = 1
-    Engine.ensure_region(id, seed: seed)
+    # Named regions are durable: their state survives restarts/deploys.
+    Engine.ensure_region(id, seed: seed, persist: named?)
 
     if connected?(socket), do: Phoenix.PubSub.subscribe(Convoy.PubSub, Engine.topic(id))
 

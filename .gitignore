@@ -39,3 +39,6 @@ npm-debug.log
 
 # AssemblyScript compiler deps (reinstall with: cd priv/asc && npm install)
 /priv/asc/node_modules/
+
+# Persisted region snapshots
+/data/

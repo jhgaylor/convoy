@@ -10,6 +10,7 @@ defmodule Convoy.Engine do
   """
 
   alias Convoy.Engine.Region
+  alias Convoy.Persistence
 
   @doc "Ensure a region process exists for `id`; returns `id`."
   def ensure_region(id, opts \\ []) do
@@ -19,6 +20,20 @@ defmodule Convoy.Engine do
       {:ok, _pid} -> id
       {:error, {:already_started, _pid}} -> id
     end
+  end
+
+  @doc """
+  Restart every persisted region on boot so the simulation continues across a
+  deploy without waiting for someone to open it (primer §2 liveness). Each
+  region restores its own snapshot and resumes. Disabled via
+  `config :convoy, :restore_on_boot, false` (e.g. in tests).
+  """
+  def restore_all do
+    if Application.get_env(:convoy, :restore_on_boot, true) do
+      for id <- Persistence.region_ids(), do: ensure_region(id, persist: true)
+    end
+
+    :ok
   end
 
   defdelegate snapshot(id), to: Region

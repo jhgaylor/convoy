@@ -67,7 +67,26 @@ speaks HTTP can drive a region.
 | **Seeded determinism / free replays** (§6, §11): same seed + same program → bit-identical result | `World.generate/1` (LCG), `:erlang.phash2` for `wander`; proven for *both* backends in tests |
 | **Region = single-writer process** (§4, §9) advancing autonomously | `Convoy.Engine.Region` GenServer; ticks on a timer, owns the WASM instance |
 | **Region registry / scale-to-zero** (§10): regions started on demand, located by id | `Registry` + `DynamicSupervisor` in `application.ex`; `Convoy.Engine.ensure_region/2` |
+| **Snapshot persistence / freeze-thaw** (§8, §11): a region resumes at the tick it stopped across a restart/deploy | `Convoy.Persistence` (file-backed snapshots) + `Region` restore-on-init + `Engine.restore_all/0` on boot |
 | **Local dev loop**: author in your editor, watch in the sim | `mix convoy.run` + `POST /api/region/:id/program` + named regions (`/?region=NAME`) |
+
+## Persistence (surviving deploys)
+
+Named/durable regions snapshot their state to disk (`data/regions/<id>.snapshot`)
+periodically, on code load, on reset, and on graceful shutdown. On boot,
+`Engine.restore_all/0` brings them back online and they resume **at the exact
+tick they stopped**, still running whatever program was loaded — so deploying a
+new version continues the simulation instead of resetting it. Reset still works:
+it regenerates the world and persists the fresh state.
+
+The player's code is treated as a **pure function of state**, so we never try to
+snapshot the live WASM VM. We persist the world plus the program *bytes* and
+re-instantiate a fresh module on resume — the deterministic `decide` function
+behaves identically. A `version` + field-shape guard discards snapshots from an
+older schema (a deploy that changes the world's shape starts that region fresh
+rather than crashing).
+
+Per-tab anonymous regions (`/` with no `?region=`) stay in-memory and ephemeral.
 | **Route a session to its region** (§9) | `ConvoyWeb.SimLive` subscribes over PubSub and sends commands |
 
 ## The program language

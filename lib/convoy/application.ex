@@ -27,7 +27,12 @@ defmodule Convoy.Application do
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Convoy.Supervisor]
-    Supervisor.start_link(children, opts)
+
+    with {:ok, pid} <- Supervisor.start_link(children, opts) do
+      # Bring persisted regions back online so the sim continues across deploys.
+      Convoy.Engine.restore_all()
+      {:ok, pid}
+    end
   end
 
   # Tell Phoenix to update the endpoint configuration
