@@ -23,6 +23,13 @@ end
 config :convoy, ConvoyWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# Where region snapshots are persisted. In k8s this points at a mounted volume
+# (CONVOY_DATA_DIR=/data/regions) so simulations survive restarts and deploys.
+# Unset in dev/test, where the compiled default ("data/regions") wins.
+if data_dir = System.get_env("CONVOY_DATA_DIR") do
+  config :convoy, Convoy.Persistence, dir: data_dir
+end
+
 if config_env() == :prod do
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you

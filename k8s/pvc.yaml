@@ -1,0 +1,15 @@
+# Region snapshots (one small file per region) live here so simulations
+# survive pod restarts and deploys. Single-writer, single replica, RWO +
+# Recreate strategy on the Deployment (the data is tiny, but durable).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: convoy-data
+  namespace: convoy
+spec:
+  storageClassName: longhorn
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

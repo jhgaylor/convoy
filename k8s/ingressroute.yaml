@@ -1,0 +1,40 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: convoy
+  namespace: convoy
+  labels:
+    app: convoy
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`convoy.inevitable.fyi`)"
+      kind: Rule
+      services:
+        - name: convoy
+          port: 80
+  tls:
+    secretName: convoy-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: convoy-http
+  namespace: convoy
+  labels:
+    app: convoy
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: "Host(`convoy.inevitable.fyi`)"
+      kind: Rule
+      middlewares:
+        # Shared redirect middleware lives in `default`; Traefik has
+        # allowCrossNamespace enabled.
+        - name: redirect-https
+          namespace: default
+      services:
+        - name: convoy
+          port: 80

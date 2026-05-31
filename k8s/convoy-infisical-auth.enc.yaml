@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: convoy-infisical-auth
+    namespace: convoy
+type: Opaque
+stringData:
+    clientId: ENC[AES256_GCM,data:kAWjDreTR/3qdGvlTpdPzQKshB7GjOVvmTvOLGEnKXPf8rId,iv:ybDiyr3yD4GF6f3S2xMEKSb17Qz0Ztd45mT4tkhkTmE=,tag:IBqOBE0byndlzzjgq8Scog==,type:str]
+    clientSecret: ENC[AES256_GCM,data:4v0gHSRyiIbp8K9FNQIXFCDiXiSTHotMXVnPk+0NFtwGCjG7I9ARHKWzShHlFnNK9zaPpoX2VhJwqEEXLy7jBA==,iv:fas14VrJNVREQoLCmremYljfMdEd0sZ1dRSVZitXfT0=,tag:CUaoeojVGzVOSwWOvqlvnQ==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB2MFVGN3NVcHNhbWlsdnAw
+            UW95clhXZmw5L3R1Mk5iUCtNWjI1VUdubGw0CjdHYmQ2UlpOZjZSK1hPWkJpN1dU
+            ZFk5YWJ0VHJHL1daNmwxdGhkOEdJMkkKLS0tIFNPaVpuUDN3NkhjYzFadDE2WWg5
+            L3pTZ0VneTEzUGd2Tkdub0tMd1VCVU0KydAgcyFklB2XoQpCJBGXUrkzu2ZYnI6W
+            E63XH3fC81libyEttjG1STSt/go9Trsaw2KvpM47h5+FJDaf0qj+Mw==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1gqdqq7uagezyew5uvhylgcasuntmltqx3mdxmwa6es5k393hg3ns4fsyrt
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-05-31T23:24:20Z"
+    mac: ENC[AES256_GCM,data:6vH0v662YfqXWMD8htou1s2o81r9fODtIQgofz07BNeyF/qxTY0Ly/k91JsO7bv1J9AeiqhE/chojmcOREDGR2oRRW46djNaRv9GmDqiNe5O4XYCPnQ7sbMrvEDum4wYyJsLllL04JRZS4vxTFFr5UBZYUPKnYsERqUBJFL6+GI=,iv:Ft5lzn5Cf/H7ySieI66NstvcyHjemmbqDctQiSpkKC0=,tag:u+wilOWXM0aMBRHMU+7vWw==,type:str]
+    version: 3.13.0

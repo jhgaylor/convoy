@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: convoy
+  namespace: convoy
+  labels:
+    app: convoy
+  annotations:
+    # Restart the pod when the Infisical operator updates convoy-secrets
+    # (SECRET_KEY_BASE is read at boot, so a rotation needs a restart).
+    secrets.infisical.com/auto-reload: "true"
+spec:
+  replicas: 1
+  # Region snapshots are on an RWO Longhorn volume; a rolling update would
+  # deadlock waiting for the old pod to release it, so tear down first.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: convoy
+  template:
+    metadata:
+      labels:
+        app: convoy
+    spec:
+      # The image runs as `nobody` (uid/gid 65534); fsGroup makes the mounted
+      # volume group-writable so snapshots can be written.
+      securityContext:
+        fsGroup: 65534
+      containers:
+        - name: convoy
+          image: ghcr.io/jhgaylor/convoy:latest
+          imagePullPolicy: Always
+          env:
+            - name: PHX_SERVER
+              value: "true"
+            - name: PHX_HOST
+              value: convoy.inevitable.fyi
+            - name: PORT
+              value: "4000"
+            # Snapshots land under the mounted volume so they survive deploys.
+            - name: CONVOY_DATA_DIR
+              value: /data/regions
+            - name: SECRET_KEY_BASE
+              valueFrom:
+                secretKeyRef:
+                  name: convoy-secrets
+                  key: SECRET_KEY_BASE
+          ports:
+            - name: http
+              containerPort: 4000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: convoy-data
