@@ -93,6 +93,11 @@ defmodule Convoy.Engine.Region do
 
   @impl true
   def init(opts) do
+    # Trap exits so a supervisor-initiated shutdown (admin Stop, or app shutdown
+    # on deploy) runs terminate/2 and writes a final snapshot — without this,
+    # exit(:shutdown) kills the process before it can persist.
+    Process.flag(:trap_exit, true)
+
     id = Keyword.fetch!(opts, :id)
     seed = Keyword.get(opts, :seed, 1)
     persist = Keyword.get(opts, :persist, false)
@@ -183,6 +188,10 @@ defmodule Convoy.Engine.Region do
   end
 
   def handle_info(:tick, state), do: {:noreply, state}
+
+  # Trapping exits surfaces stray {:EXIT, _, _} from any links as messages;
+  # ignore them (the parent's shutdown is handled by GenServer → terminate/2).
+  def handle_info(_msg, state), do: {:noreply, state}
 
   # --- players ---
 

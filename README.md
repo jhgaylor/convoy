@@ -19,11 +19,13 @@ mix phx.server   # http://localhost:4000
 Then open the page, edit the harvester program on the left, press **Run**, and
 watch your agents harvest ore and deliver it to base on the grid.
 
-**World overview** at `/admin`: every running simulation at a glance — system
-utilization (BEAM scheduler %, VM memory, process count) and per-sim stats
-(tick, players, harvesters, ore, fuel/tick, memory, reductions/sec), with
-**Stop** (free compute; a persisted region resumes when reopened) and **Delete**
-(stop + remove its snapshot). Put it behind auth before exposing it publicly.
+**World overview** at `/admin`: every simulation at a glance — running ones
+with live system + per-sim utilization (BEAM scheduler %, VM memory, process
+count; per-sim tick, players, harvesters, ore, fuel/tick, memory,
+reductions/sec), and stopped-but-persisted ones (built from their snapshot).
+Controls: **Stop** (free compute; snapshot kept), **Resume** (restart a stopped
+one), **Delete** (remove its snapshot). Put it behind auth before exposing it
+publicly.
 
 ## Local dev workflow (write code in your editor, watch it in the sim)
 

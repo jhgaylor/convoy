@@ -9,7 +9,7 @@ defmodule Convoy.Engine do
   brings it warm/hot.
   """
 
-  alias Convoy.Engine.Region
+  alias Convoy.Engine.{Region, World}
   alias Convoy.Persistence
 
   @doc "Ensure a region process exists for `id`; returns `id`."
@@ -41,11 +41,44 @@ defmodule Convoy.Engine do
     Registry.select(Convoy.Engine.RegionRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
   end
 
-  @doc "Operational stats for a region, or nil if it's gone/unresponsive."
+  @doc "Operational stats for a running region, or nil if it's gone/unresponsive."
   def region_stats(id) do
     Region.stats(id)
   catch
     :exit, _ -> nil
+  end
+
+  @doc "Ids of regions with a persisted snapshot (running or not)."
+  def persisted_regions, do: Persistence.region_ids()
+
+  @doc """
+  A stats row for a *stopped* (persisted but not running) region, built from
+  its snapshot so the admin page can still show and delete it. No live process
+  means no memory/reductions.
+  """
+  def stopped_region_stats(id) do
+    case Persistence.load(id) do
+      {:ok, %{world: %World{} = world} = snap} ->
+        %{
+          region_id: id,
+          status: :stopped,
+          tick: world.tick,
+          tick_ms: Map.get(snap, :tick_ms, 0),
+          last_fuel: 0,
+          players: map_size(Map.get(snap, :players, %{})),
+          scores: world.scores,
+          entities: length(world.entities),
+          ore_remaining: World.ore_remaining(world),
+          delivered: World.total_delivered(world),
+          persist: true,
+          wasm_instances: 0,
+          memory: 0,
+          reductions: 0
+        }
+
+      _ ->
+        nil
+    end
   end
 
   @doc """

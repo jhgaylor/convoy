@@ -38,6 +38,27 @@ defmodule Convoy.AdminTest do
     assert Engine.region_stats("does-not-exist-#{System.unique_integer([:positive])}") == nil
   end
 
+  test "a stopped (persisted) region is still listed and deletable" do
+    id = "ov-#{System.unique_integer([:positive])}"
+    Engine.ensure_region(id, persist: true)
+    Engine.submit_player(id, "p1", :rules, "otherwise idle", "otherwise idle")
+
+    # Stop: the process is gone but the snapshot remains.
+    Engine.stop_region(id)
+    Process.sleep(20)
+    refute id in Engine.list_regions()
+    assert id in Engine.persisted_regions()
+
+    # The overview can still build a row for it (status :stopped) and delete it.
+    stats = Engine.stopped_region_stats(id)
+    assert stats.status == :stopped
+    assert stats.players == 1
+    assert stats.entities == 3
+
+    Engine.delete_region(id)
+    refute id in Engine.persisted_regions()
+  end
+
   test "delete_region stops it and removes the snapshot" do
     id = "ov-#{System.unique_integer([:positive])}"
     Engine.ensure_region(id, persist: true)

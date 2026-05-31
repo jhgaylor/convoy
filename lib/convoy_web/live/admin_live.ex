@@ -40,14 +40,30 @@ defmodule ConvoyWeb.AdminLive do
     {:noreply, refresh(socket)}
   end
 
+  def handle_event("resume", %{"id" => id}, socket) do
+    # Start the region; it restores its snapshot and resumes its prior status.
+    Engine.ensure_region(id, persist: true)
+    {:noreply, refresh(socket)}
+  end
+
   # --- data gathering ---
 
   defp refresh(socket) do
-    stats =
-      Engine.list_regions()
+    running_ids = Engine.list_regions()
+
+    running =
+      running_ids
       |> Enum.map(&Engine.region_stats/1)
       |> Enum.reject(&is_nil/1)
-      |> Enum.sort_by(& &1.region_id)
+
+    # Persisted regions with no live process are stopped — still listable so
+    # they can be resumed or deleted.
+    stopped =
+      (Engine.persisted_regions() -- running_ids)
+      |> Enum.map(&Engine.stopped_region_stats/1)
+      |> Enum.reject(&is_nil/1)
+
+    stats = Enum.sort_by(running ++ stopped, & &1.region_id)
 
     prev = socket.assigns.prev_reductions
 
@@ -176,7 +192,8 @@ defmodule ConvoyWeb.AdminLive do
                     <span class={[
                       "px-1.5 py-0.5 rounded text-[10px] font-mono uppercase",
                       r.status == :running && "bg-emerald-500/20 text-emerald-300",
-                      r.status == :paused && "bg-slate-700 text-slate-300"
+                      r.status == :paused && "bg-slate-700 text-slate-300",
+                      r.status == :stopped && "bg-slate-800 text-slate-500"
                     ]}>
                       {r.status}
                     </span>
@@ -185,11 +202,20 @@ defmodule ConvoyWeb.AdminLive do
                   <td class="px-3 py-2 text-right font-mono">{r.players}</td>
                   <td class="px-3 py-2 text-right font-mono">{r.entities}</td>
                   <td class="px-3 py-2 text-right font-mono text-amber-300">{r.ore_remaining}</td>
-                  <td class="px-3 py-2 text-right font-mono text-fuchsia-300">{r.last_fuel}</td>
-                  <td class="px-3 py-2 text-right font-mono text-slate-400">{mb(r.memory)}</td>
-                  <td class="px-3 py-2 text-right font-mono text-slate-400">{fmt_int(r.reductions_per_s)}</td>
+                  <td class="px-3 py-2 text-right font-mono text-fuchsia-300">{stopped_dash(r, r.last_fuel)}</td>
+                  <td class="px-3 py-2 text-right font-mono text-slate-400">{stopped_dash(r, mb(r.memory))}</td>
+                  <td class="px-3 py-2 text-right font-mono text-slate-400">{stopped_dash(r, fmt_int(r.reductions_per_s))}</td>
                   <td class="px-3 py-2 text-right whitespace-nowrap">
                     <button
+                      :if={r.status == :stopped}
+                      phx-click="resume"
+                      phx-value-id={r.region_id}
+                      class="px-2 py-0.5 rounded text-[11px] bg-emerald-500/80 hover:bg-emerald-500 text-slate-950"
+                    >
+                      Resume
+                    </button>
+                    <button
+                      :if={r.status != :stopped}
                       phx-click="stop"
                       phx-value-id={r.region_id}
                       class="px-2 py-0.5 rounded text-[11px] bg-slate-700 hover:bg-slate-600"
@@ -238,6 +264,10 @@ defmodule ConvoyWeb.AdminLive do
     </div>
     """
   end
+
+  # Live-only columns show a dash for stopped (no process) regions.
+  defp stopped_dash(%{status: :stopped}, _value), do: "—"
+  defp stopped_dash(_row, value), do: value
 
   defp mb(bytes), do: "#{Float.round(bytes / 1_048_576, 1)} MB"
 
