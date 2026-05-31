@@ -36,6 +36,23 @@ mix convoy.run examples/harvester.rs --watch
 Open `http://localhost:4000/?region=dev` and just watch. Each save recompiles
 and reloads the running region. Edit `examples/harvester.rs`, save, see it change.
 
+### Multiplayer (a shared world)
+
+Submit different players into the **same region** and they run as independent
+players in one common world — each owns their own harvesters, runs their own
+code, and scores separately. Two terminals, two strategies, one arena:
+
+```bash
+mix convoy.run examples/harvester.rules --region arena --player alice
+mix convoy.run examples/harvester.rs    --region arena --player bob
+```
+
+Open `http://localhost:4000/?region=arena` to watch the scoreboard and the
+colour-coded harvesters compete for ore. The shared world arbitrates conflicts
+authoritatively (resolved in entity-id order, single-writer), so two players
+reaching for the last ore in a cell is decided fairly and deterministically.
+The in-browser editor controls player `p1`; the CLI/API add the rest.
+
 Prefer the terminal? `--headless` runs the sim in-process and renders ASCII —
 no server, no browser, the fastest loop:
 
@@ -181,9 +198,19 @@ OS-level isolation (gVisor / Firecracker, no network egress, ephemeral pods)
 from §7 is the *next* defense layer; fuel + caps + trap containment is the in-BEAM
 layer, and it's done.
 
+## Multiplayer model
+
+A region is a shared world with many players. Each player submits their own
+program and owns a set of harvesters; the tick loop runs each entity's *owner's*
+program, then resolves all intents in entity-id order (single-writer), so
+competition for ore is arbitrated fairly and deterministically. Scoring is
+per-player (`World.scores`). The browser editor drives player `p1`; others join
+via `mix convoy.run --player NAME` / the HTTP API. Players, their programs, and
+scores are all part of the persisted snapshot, so a shared game survives deploys.
+
 ## Not yet built (next milestones, per the primer)
 
-- Warm/cold fast-forward + snapshot/event-log persistence (§5, §8).
+- Warm/cold fast-forward (§5) and the event-log half of persistence (§8).
 - Convoys and border-crossing handoff between regions (§4) — the only PvP moment.
 - OS-level sandbox around both the WASM runner *and* the compile service (§7, §10).
 - Persistent player "Memory" between ticks (§8) and per-player module storage.

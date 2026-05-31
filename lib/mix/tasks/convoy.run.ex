@@ -15,12 +15,18 @@ defmodule Mix.Tasks.Convoy.Run do
   ## Two modes
 
   **Server (default).** Pushes the bot to a running `mix phx.server` over HTTP,
-  into a named region, and starts it. Open `http://localhost:4000/?region=dev`
-  in a browser and the UI just *watches* — no clicking required. Combine with
-  `--watch` to re-push on every save: edit, save, see it update.
+  into a named region, as a named player, and starts it. Open
+  `http://localhost:4000/?region=dev` in a browser and the UI just *watches*.
+  Combine with `--watch` to re-push on every save: edit, save, see it update.
 
       mix phx.server                       # in one terminal
       mix convoy.run bot.rs --watch        # in another
+
+  **Multiplayer.** Submit different `--player` ids into the same `--region` and
+  they run as independent players in one shared world:
+
+      mix convoy.run alice.rs --region arena --player alice
+      mix convoy.run bob.ts  --region arena --player bob
 
   **Headless (`--headless`).** Runs the sim in-process and renders it as ASCII
   in this terminal. No server, no browser — the fastest iteration loop.
@@ -30,6 +36,7 @@ defmodule Mix.Tasks.Convoy.Run do
   ## Options
 
       --region NAME   region to load into (default "dev")
+      --player NAME   player id to submit as (default "p1")
       --server URL    server base url (default http://localhost:4000)
       --headless      run locally and render to the terminal
       --ticks N       headless: ticks to simulate (default 200)
@@ -47,6 +54,7 @@ defmodule Mix.Tasks.Convoy.Run do
 
   @switches [
     region: :string,
+    player: :string,
     server: :string,
     headless: :boolean,
     ticks: :integer,
@@ -55,7 +63,7 @@ defmodule Mix.Tasks.Convoy.Run do
     lang: :string,
     watch: :boolean
   ]
-  @aliases [r: :region, s: :server, h: :headless, t: :ticks, w: :watch]
+  @aliases [r: :region, p: :player, s: :server, h: :headless, t: :ticks, w: :watch]
 
   @impl Mix.Task
   def run(argv) do
@@ -84,16 +92,19 @@ defmodule Mix.Tasks.Convoy.Run do
 
   defp run_server(source, lang, opts) do
     region = opts[:region] || "dev"
+    player = opts[:player] || "p1"
     server = String.trim_trailing(opts[:server] || "http://localhost:4000", "/")
     url = "#{server}/api/region/#{region}/program"
 
+    base = %{player: player}
+
     body =
       case lang do
-        :wasm -> %{language: "wasm", source: Base.encode64(source), encoding: "base64"}
-        _ -> %{language: to_string(lang), source: source}
+        :wasm -> Map.merge(base, %{language: "wasm", source: Base.encode64(source), encoding: "base64"})
+        _ -> Map.merge(base, %{language: to_string(lang), source: source})
       end
 
-    info("→ #{lang} → #{url}")
+    info("→ #{lang} as player '#{player}' → #{url}")
 
     case http_post(url, Jason.encode!(body)) do
       {:error, reason} ->
@@ -101,7 +112,7 @@ defmodule Mix.Tasks.Convoy.Run do
 
       {200, payload} ->
         backend = payload["backend"] || "?"
-        ok("loaded (#{backend}) and running in region '#{region}'")
+        ok("player '#{player}' loaded (#{backend}) in region '#{region}'")
         info("   watch it: #{server}/?region=#{region}")
 
       {status, payload} ->

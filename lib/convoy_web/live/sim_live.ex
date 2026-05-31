@@ -183,6 +183,9 @@ defmodule ConvoyWeb.SimLive do
     |> assign(:fuel_budget, snap.fuel_budget)
     |> assign(:last_fuel, snap.last_fuel)
     |> assign(:compile_error, snap.compile_error)
+    |> assign(:scores, snap.scores)
+    |> assign(:players, snap.players)
+    |> assign(:editor_player, snap.editor_player)
   end
 
   defp region_id(%{"region" => name}) when is_binary(name) and name != "" do
@@ -226,7 +229,7 @@ defmodule ConvoyWeb.SimLive do
         </div>
         <div class="flex items-center gap-4 text-sm">
           <.stat label="tick" value={@world.tick} />
-          <.stat label="delivered" value={@world.delivered} accent="text-emerald-400" />
+          <.stat label="delivered" value={World.total_delivered(@world)} accent="text-emerald-400" />
           <.stat label="ore left" value={World.ore_remaining(@world)} accent="text-amber-400" />
           <%= if @backend == :wasm do %>
             <.stat label="fuel/tick" value={@last_fuel} accent="text-fuchsia-400" />
@@ -384,6 +387,7 @@ defmodule ConvoyWeb.SimLive do
 
         <%!-- right: the world --%>
         <section class="space-y-4">
+          <.scoreboard scores={@scores} players={@players} editor_player={@editor_player} />
           <.grid world={@world} />
           <.entities world={@world} />
           <.event_log world={@world} />
@@ -404,6 +408,37 @@ defmodule ConvoyWeb.SimLive do
     <div class="text-center">
       <div class={["font-mono font-bold leading-none", @accent]}>{@value}</div>
       <div class="text-[10px] uppercase tracking-wide text-slate-500">{@label}</div>
+    </div>
+    """
+  end
+
+  attr :scores, :map, required: true
+  attr :players, :map, required: true
+  attr :editor_player, :string, required: true
+
+  defp scoreboard(assigns) do
+    ~H"""
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-xs uppercase tracking-wide text-slate-400">Players</div>
+        <div class="text-[10px] text-slate-500">submit more with <code class="text-slate-400">mix convoy.run --player</code></div>
+      </div>
+      <div class="space-y-1">
+        <%= for {player, score} <- Enum.sort_by(@scores, fn {_p, s} -> -s end) do %>
+          <% color = player_color(player) %>
+          <div class="flex items-center gap-2 text-sm">
+            <span class={["w-2.5 h-2.5 rounded-full", color.dot]}></span>
+            <span class={["font-mono", color.text]}>{player}</span>
+            <%= if player == @editor_player do %>
+              <span class="text-[10px] text-slate-500">(you)</span>
+            <% end %>
+            <%= if err = get_in(@players, [player, :compile_error]) do %>
+              <span class="text-[10px] text-rose-400" title={err}>⛔</span>
+            <% end %>
+            <span class="ml-auto font-mono font-bold text-slate-100">{score}</span>
+          </div>
+        <% end %>
+      </div>
     </div>
     """
   end
@@ -437,7 +472,7 @@ defmodule ConvoyWeb.SimLive do
       <%= for e <- Enum.sort_by(@world.entities, & &1.id) do %>
         <div class="bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs">
           <div class="flex items-center justify-between">
-            <span class="font-mono text-sky-300">🤖 H{e.id}</span>
+            <span class={["font-mono", player_color(e.owner).text]}>🤖 {e.owner}/H{e.id}</span>
             <span class="text-slate-500">({e.x},{e.y})</span>
           </div>
           <div class="mt-1 flex items-center gap-1">
@@ -562,16 +597,19 @@ defmodule ConvoyWeb.SimLive do
 
     cond do
       here != [] ->
-        ids = here |> Enum.map(& &1.id) |> Enum.join(",")
+        # Colour the cell by the (lowest-id) occupant's owner so you can see
+        # whose harvesters are where in the shared world.
+        owner = here |> Enum.min_by(& &1.id) |> Map.get(:owner)
+        owners = here |> Enum.map(& &1.owner) |> Enum.uniq() |> Enum.join(",")
 
         %{
           glyph: "🤖",
-          bg: if(pos == world.base, do: "bg-sky-700", else: "bg-slate-600"),
-          title: "Harvester #{ids} @ #{x},#{y}"
+          bg: player_color(owner).cell,
+          title: "#{owners} @ #{x},#{y}"
         }
 
       pos == world.base ->
-        %{glyph: "🏠", bg: "bg-sky-800", title: "Base @ #{x},#{y}"}
+        %{glyph: "🏠", bg: "bg-slate-700", title: "Base @ #{x},#{y}"}
 
       ore > 0 ->
         %{glyph: "", bg: ore_bg(ore), title: "Ore: #{ore} @ #{x},#{y}"}
@@ -588,5 +626,20 @@ defmodule ConvoyWeb.SimLive do
       amount >= 5 -> "bg-amber-700"
       true -> "bg-amber-800"
     end
+  end
+
+  # Stable per-player colour from a fixed palette (Tailwind needs literal class
+  # names, so we map a hash onto whole strings rather than interpolate).
+  @palette [
+    %{dot: "bg-emerald-400", text: "text-emerald-300", cell: "bg-emerald-600"},
+    %{dot: "bg-sky-400", text: "text-sky-300", cell: "bg-sky-600"},
+    %{dot: "bg-fuchsia-400", text: "text-fuchsia-300", cell: "bg-fuchsia-600"},
+    %{dot: "bg-amber-400", text: "text-amber-300", cell: "bg-amber-600"},
+    %{dot: "bg-rose-400", text: "text-rose-300", cell: "bg-rose-600"},
+    %{dot: "bg-cyan-400", text: "text-cyan-300", cell: "bg-cyan-600"}
+  ]
+
+  defp player_color(player_id) do
+    Enum.at(@palette, rem(:erlang.phash2(player_id), length(@palette)))
   end
 end

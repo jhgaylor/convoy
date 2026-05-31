@@ -154,8 +154,8 @@ defmodule Convoy.WasmTest do
     rules_world = World.generate(seed: 9) |> Sim.run(rules, 200)
     wasm_world = World.generate(seed: 9) |> Sim.run(wasm_decider(instance), 200)
 
-    assert wasm_world.delivered == rules_world.delivered
-    assert wasm_world.delivered > 0
+    assert World.total_delivered(wasm_world) == World.total_delivered(rules_world)
+    assert World.total_delivered(wasm_world) > 0
     assert wasm_world.resources == rules_world.resources
 
     Wasm.stop(instance)

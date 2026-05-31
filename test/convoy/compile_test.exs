@@ -30,8 +30,8 @@ defmodule Convoy.CompileTest do
     wasm_world = World.generate(seed: 9) |> Sim.run(wasm_decider(instance), 200)
     baseline = rules_baseline()
 
-    assert wasm_world.delivered == baseline.delivered
-    assert wasm_world.delivered > 0
+    assert World.total_delivered(wasm_world) == World.total_delivered(baseline)
+    assert World.total_delivered(wasm_world) > 0
     assert wasm_world.resources == baseline.resources
     Wasm.stop(instance)
   end

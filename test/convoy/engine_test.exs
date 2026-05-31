@@ -62,7 +62,7 @@ defmodule Convoy.EngineTest do
 
   test "harvesters actually deliver ore to the base over time" do
     final = World.generate(seed: 7) |> Sim.run(rules(), 200)
-    assert final.delivered > 0
+    assert World.total_delivered(final) > 0
     assert final.tick == 200
   end
 
@@ -75,7 +75,7 @@ defmodule Convoy.EngineTest do
     in_cargo = final.entities |> Enum.map(& &1.cargo) |> Enum.sum()
     spawned = final.replenished * World.resource_amount()
 
-    assert final.delivered + in_cargo + World.ore_remaining(final) == total + spawned
+    assert World.total_delivered(final) + in_cargo + World.ore_remaining(final) == total + spawned
   end
 
   test "a dwindling map spawns a fresh deposit at its last node" do

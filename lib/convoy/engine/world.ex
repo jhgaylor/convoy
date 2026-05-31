@@ -15,8 +15,11 @@ defmodule Convoy.Engine.World do
 
   @type pos :: {non_neg_integer(), non_neg_integer()}
 
+  @type player_id :: String.t()
+
   @type entity :: %{
           id: pos_integer(),
+          owner: player_id(),
           x: non_neg_integer(),
           y: non_neg_integer(),
           cargo: non_neg_integer(),
@@ -32,7 +35,8 @@ defmodule Convoy.Engine.World do
             base: {0, 0},
             resources: %{},
             entities: [],
-            delivered: 0,
+            scores: %{},
+            next_entity_id: 1,
             replenished: 0,
             events: []
 
@@ -45,7 +49,8 @@ defmodule Convoy.Engine.World do
           base: pos(),
           resources: %{pos() => non_neg_integer()},
           entities: [entity()],
-          delivered: non_neg_integer(),
+          scores: %{player_id() => non_neg_integer()},
+          next_entity_id: pos_integer(),
           replenished: non_neg_integer(),
           events: [String.t()]
         }
@@ -54,6 +59,7 @@ defmodule Convoy.Engine.World do
   @resource_amount 40
   @harvesters 3
   @cargo_max 5
+  @default_player "p1"
   # Spawn a fresh deposit when the map drops to this many nodes (or fewer), so
   # a region can never be mined to a dead end.
   @replenish_threshold 1
@@ -74,11 +80,6 @@ defmodule Convoy.Engine.World do
 
     {resources, _rng} = place_resources(seed, width, height, base)
 
-    entities =
-      for i <- 1..@harvesters do
-        %{id: i, x: 0, y: 0, cargo: 0, cargo_max: @cargo_max, last_action: :idle}
-      end
-
     %World{
       region_id: region_id,
       seed: seed,
@@ -87,11 +88,79 @@ defmodule Convoy.Engine.World do
       tick: 0,
       base: base,
       resources: resources,
-      entities: entities,
-      delivered: 0,
+      entities: [],
+      scores: %{},
+      next_entity_id: 1,
       events: ["Region #{region_id} initialized from seed #{seed}."]
     }
+    # Seed a default player so solo play (and tests) start with harvesters.
+    |> add_player(@default_player)
   end
+
+  @doc "The default player id (the one the in-browser editor controls)."
+  @spec default_player() :: player_id()
+  def default_player, do: @default_player
+
+  @doc "How many harvesters a player gets when they join."
+  @spec harvesters_per_player() :: pos_integer()
+  def harvesters_per_player, do: @harvesters
+
+  @doc """
+  Add a player to the world: spawn their harvesters at base and start their
+  score at 0. Idempotent — re-adding an existing player is a no-op (so a player
+  resubmitting code keeps their entities).
+  """
+  @spec add_player(t(), player_id(), pos_integer()) :: t()
+  def add_player(world, player_id, count \\ @harvesters)
+
+  def add_player(%World{scores: scores} = world, player_id, _count)
+      when is_map_key(scores, player_id),
+      do: world
+
+  def add_player(%World{} = world, player_id, count) do
+    {bx, by} = world.base
+
+    {new_entities, next_id} =
+      Enum.map_reduce(1..count, world.next_entity_id, fn _i, id ->
+        entity = %{
+          id: id,
+          owner: player_id,
+          x: bx,
+          y: by,
+          cargo: 0,
+          cargo_max: @cargo_max,
+          last_action: :idle
+        }
+
+        {entity, id + 1}
+      end)
+
+    %{
+      world
+      | entities: world.entities ++ new_entities,
+        scores: Map.put(world.scores, player_id, 0),
+        next_entity_id: next_id,
+        events: ["Player #{player_id} joined with #{count} harvesters." | world.events]
+    }
+  end
+
+  @doc "Credit ore to a player's score."
+  @spec credit(t(), player_id(), non_neg_integer()) :: t()
+  def credit(%World{} = world, player_id, amount) do
+    %{world | scores: Map.update(world.scores, player_id, amount, &(&1 + amount))}
+  end
+
+  @doc "A player's delivered total (0 if unknown)."
+  @spec score(t(), player_id()) :: non_neg_integer()
+  def score(%World{scores: scores}, player_id), do: Map.get(scores, player_id, 0)
+
+  @doc "Ore delivered across all players."
+  @spec total_delivered(t()) :: non_neg_integer()
+  def total_delivered(%World{scores: scores}), do: scores |> Map.values() |> Enum.sum()
+
+  @doc "Player ids present in the world."
+  @spec players(t()) :: [player_id()]
+  def players(%World{scores: scores}), do: Map.keys(scores)
 
   @doc "The ore amount a freshly-spawned (or generated) deposit holds."
   @spec resource_amount() :: pos_integer()

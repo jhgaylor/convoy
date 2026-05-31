@@ -121,7 +121,7 @@ defmodule Convoy.Engine.Sim do
         world
         |> Map.put(:resources, resources)
         |> update_entity(id, &%{&1 | cargo: &1.cargo + taken, last_action: :harvest})
-        |> note("Harvester #{id} mined #{taken} ore at #{fmt(pos)}.")
+        |> note("#{e.owner}/H#{id} mined #{taken} ore at #{fmt(pos)}.")
     end
   end
 
@@ -130,11 +130,12 @@ defmodule Convoy.Engine.Sim do
 
     if {e.x, e.y} == world.base and e.cargo > 0 do
       delivered = e.cargo
+      total = World.score(world, e.owner) + delivered
 
       world
-      |> Map.put(:delivered, world.delivered + delivered)
+      |> World.credit(e.owner, delivered)
       |> update_entity(id, &%{&1 | cargo: 0, last_action: :unload})
-      |> note("Harvester #{id} delivered #{delivered} ore to base. (total: #{world.delivered + delivered})")
+      |> note("#{e.owner}/H#{id} delivered #{delivered} ore. (#{e.owner}: #{total})")
     else
       update_entity(world, id, &%{&1 | last_action: :idle})
     end

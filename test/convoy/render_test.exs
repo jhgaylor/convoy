@@ -20,6 +20,7 @@ defmodule Convoy.Engine.RenderTest do
     frame = World.generate(seed: 1) |> Render.frame()
     assert frame =~ "tick 0"
     assert frame =~ "delivered 0"
+    assert frame =~ "scores"
     assert frame =~ "ore-left"
   end
 

@@ -6,16 +6,20 @@ defmodule ConvoyWeb.RegionController do
 
   `POST /api/region/:id/program` with JSON:
 
-      {"language": "rust", "source": "...source text..."}
-      {"language": "wasm", "source": "<base64>", "encoding": "base64"}
+      {"player": "alice", "language": "rust", "source": "...source text..."}
+      {"player": "bob", "language": "wasm", "source": "<base64>", "encoding": "base64"}
 
-  Languages: `rules`, `wat`, `assemblyscript`, `rust`, `tinygo`, `wasm`.
-  Compilation happens server-side (`Convoy.Loader` → `Convoy.Compile`); the
-  region is created if needed, the program loaded, and the sim started.
+  `player` is optional (defaults to the editor player). Submitting different
+  players into the same region id is how multiplayer works: each becomes an
+  independent player in one shared world. Languages: `rules`, `wat`,
+  `assemblyscript`, `rust`, `tinygo`, `wasm`. Compilation happens server-side
+  (`Convoy.Loader` → `Convoy.Compile`); the region is created if needed, the
+  player's program loaded, and the sim started.
   """
   use ConvoyWeb, :controller
 
   alias Convoy.{Engine, Loader}
+  alias Convoy.Engine.World
 
   @languages %{
     "rules" => :rules,
@@ -29,18 +33,33 @@ defmodule ConvoyWeb.RegionController do
   def load(conn, %{"id" => id} = params) do
     # CLI-driven regions are durable so a deploy resumes them.
     Engine.ensure_region(id, persist: true)
+    player = player_id(params)
 
     with {:ok, lang} <- fetch_language(params),
          {:ok, source} <- fetch_source(params),
          {:ok, backend, exec, display} <- Loader.prepare(lang, source),
-         :ok <- Engine.load_program(id, backend, exec, display) do
+         :ok <- Engine.submit_player(id, player, backend, exec, display) do
       Engine.play(id)
-      json(conn, %{status: "ok", region: id, backend: backend, source: short(display)})
+      json(conn, %{status: "ok", region: id, player: player, backend: backend, source: short(display)})
     else
       {:error, status, msg} -> fail(conn, status, msg)
       {:error, msg} -> fail(conn, 422, msg)
     end
   end
+
+  defp player_id(params) do
+    case params["player"] do
+      p when is_binary(p) and p != "" ->
+        # keep ids tame and filesystem/registry-safe
+        String.replace(p, ~r/[^a-zA-Z0-9_-]/, "") |> default_if_blank()
+
+      _ ->
+        World.default_player()
+    end
+  end
+
+  defp default_if_blank(""), do: World.default_player()
+  defp default_if_blank(p), do: p
 
   defp fetch_language(params) do
     case Map.get(@languages, params["language"]) do
