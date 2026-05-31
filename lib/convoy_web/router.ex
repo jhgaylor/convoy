@@ -18,6 +18,8 @@ defmodule ConvoyWeb.Router do
     pipe_through :browser
 
     live "/", SimLive, :index
+    # World overview / admin. Put behind auth before exposing publicly.
+    live "/admin", AdminLive, :index
   end
 
   scope "/api", ConvoyWeb do

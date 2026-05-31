@@ -36,6 +36,36 @@ defmodule Convoy.Engine do
     :ok
   end
 
+  @doc "Ids of all live regions (running simulations)."
+  def list_regions do
+    Registry.select(Convoy.Engine.RegionRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+  end
+
+  @doc "Operational stats for a region, or nil if it's gone/unresponsive."
+  def region_stats(id) do
+    Region.stats(id)
+  catch
+    :exit, _ -> nil
+  end
+
+  @doc """
+  Stop a running simulation, freeing its compute. A persisted region snapshots
+  on the way out (so it resumes when next opened); use `delete_region/1` to
+  remove it for good.
+  """
+  def stop_region(id) do
+    case Registry.lookup(Convoy.Engine.RegionRegistry, id) do
+      [{pid, _}] -> DynamicSupervisor.terminate_child(Convoy.Engine.RegionSupervisor, pid)
+      [] -> :ok
+    end
+  end
+
+  @doc "Stop a simulation and delete its persisted snapshot."
+  def delete_region(id) do
+    stop_region(id)
+    Persistence.delete(id)
+  end
+
   defdelegate snapshot(id), to: Region
   defdelegate load_program(id, backend, exec, display), to: Region
   defdelegate submit_player(id, player_id, backend, exec, display), to: Region

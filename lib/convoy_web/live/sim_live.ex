@@ -225,6 +225,9 @@ defmodule ConvoyWeb.SimLive do
           <h1 class="text-xl font-bold tracking-tight">
             <span class="text-amber-400">Forge</span> &amp; <span class="text-sky-400">Convoy</span>
             <span class="ml-2 text-xs font-normal text-slate-500">v1 · region {@region_id}</span>
+            <.link navigate={~p"/admin"} class="ml-2 text-xs font-normal text-sky-400 hover:underline">
+              overview
+            </.link>
           </h1>
           <p class="text-xs text-slate-500 mt-0.5">
             Your code is your only interface. Write a harvester program; watch the deterministic sim run it.

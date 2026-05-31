@@ -64,6 +64,13 @@ defmodule Convoy.Engine.Region do
   def snapshot(id), do: GenServer.call(via(id), :snapshot)
 
   @doc """
+  Operational stats for the admin/overview page: world summary plus this
+  region's resource use (the region process *and* its players' WASM instance
+  processes). `reductions` is cumulative — the caller diffs it for a rate.
+  """
+  def stats(id), do: GenServer.call(via(id), :stats)
+
+  @doc """
   Submit (add or replace) a player's program. A new player joins the shared
   world with their own harvesters; an existing player swaps program and keeps
   their entities. `exec` is rule text / WAT / wasm bytes; `display` is the
@@ -108,6 +115,8 @@ defmodule Convoy.Engine.Region do
 
   @impl true
   def handle_call(:snapshot, _from, state), do: {:reply, public(state), state}
+
+  def handle_call(:stats, _from, state), do: {:reply, stats(self(), state), state}
 
   def handle_call({:submit, player_id, backend, exec, display}, _from, state) do
     case build_player(player_id, backend, exec, display) do
@@ -401,5 +410,43 @@ defmodule Convoy.Engine.Region do
     Map.new(state.players, fn {pid, p} ->
       {pid, %{backend: p.backend, compile_error: p.compile_error}}
     end)
+  end
+
+  # World summary + process-level resource use (this region + its wasm pids).
+  defp stats(self_pid, state) do
+    # player.wasm is the instance struct %{pid:, store:} (or nil) — we want the pid.
+    wasm_pids =
+      state.players
+      |> Map.values()
+      |> Enum.map(& &1.wasm)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(& &1.pid)
+
+    {wasm_mem, wasm_red} =
+      Enum.reduce(wasm_pids, {0, 0}, fn pid, {m, r} ->
+        case Process.info(pid, [:memory, :reductions]) do
+          [{:memory, mm}, {:reductions, rr}] -> {m + mm, r + rr}
+          _ -> {m, r}
+        end
+      end)
+
+    [{:memory, mem}, {:reductions, red}] = Process.info(self_pid, [:memory, :reductions])
+
+    %{
+      region_id: state.id,
+      status: state.status,
+      tick: state.world.tick,
+      tick_ms: state.tick_ms,
+      last_fuel: state.last_fuel,
+      players: map_size(state.players),
+      scores: state.world.scores,
+      entities: length(state.world.entities),
+      ore_remaining: World.ore_remaining(state.world),
+      delivered: World.total_delivered(state.world),
+      persist: state.persist,
+      wasm_instances: length(wasm_pids),
+      memory: mem + wasm_mem,
+      reductions: red + wasm_red
+    }
   end
 end

@@ -19,6 +19,12 @@ mix phx.server   # http://localhost:4000
 Then open the page, edit the harvester program on the left, press **Run**, and
 watch your agents harvest ore and deliver it to base on the grid.
 
+**World overview** at `/admin`: every running simulation at a glance — system
+utilization (BEAM scheduler %, VM memory, process count) and per-sim stats
+(tick, players, harvesters, ore, fuel/tick, memory, reductions/sec), with
+**Stop** (free compute; a persisted region resumes when reopened) and **Delete**
+(stop + remove its snapshot). Put it behind auth before exposing it publicly.
+
 ## Local dev workflow (write code in your editor, watch it in the sim)
 
 You don't have to write bots in the website. Develop in your editor, run one
@@ -87,6 +93,7 @@ speaks HTTP can drive a region.
 | **Region registry / scale-to-zero** (§10): regions started on demand, located by id | `Registry` + `DynamicSupervisor` in `application.ex`; `Convoy.Engine.ensure_region/2` |
 | **Snapshot persistence / freeze-thaw** (§8, §11): a region resumes at the tick it stopped across a restart/deploy | `Convoy.Persistence` (file-backed snapshots) + `Region` restore-on-init + `Engine.restore_all/0` on boot |
 | **Local dev loop**: author in your editor, watch in the sim | `mix convoy.run` + `POST /api/region/:id/program` + named regions (`/?region=NAME`) |
+| **Ops/overview**: every running sim + utilization, stop/delete | `ConvoyWeb.AdminLive` (`/admin`) + `Engine.list_regions/0`, `region_stats/1`, `stop_region/1`, `delete_region/1` |
 
 ## Persistence (surviving deploys)
 
