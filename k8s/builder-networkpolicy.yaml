@@ -1,0 +1,18 @@
+# Deny all egress from the builder pod. The compile step is offline (single
+# file, no deps), so the builder never needs to reach anything — and denying
+# egress means untrusted compiled code can't phone home, fetch dependencies,
+# or pivot into the cluster. Replies to the app's inbound requests still flow
+# (those ride the established connection, not pod-initiated egress). Ingress is
+# already limited to the cluster because the Service is ClusterIP.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: convoy-builder-deny-egress
+  namespace: convoy
+spec:
+  podSelector:
+    matchLabels:
+      app: convoy-builder
+  policyTypes:
+    - Egress
+  egress: []

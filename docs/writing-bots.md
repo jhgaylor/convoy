@@ -68,17 +68,18 @@ The language is inferred from the file extension (`.rs .go .ts .wat .rules
 .wasm`). Add `--player NAME --region arena` to join a shared world. See the
 [README](../README.md#local-dev-workflow-write-code-in-your-editor-watch-it-in-the-sim).
 
-### The hosted instance (and the universal path): upload a `.wasm`
+### The hosted instance: ship us your source
 
-The hosted instance does **not** run language toolchains (no `rustc`/`tinygo`/
-`asc` server-side). The path that always works, anywhere, in any language:
+The hosted instance compiles **server-side**: pick your language in the editor,
+paste your source, set a player name, and Run. Rust / Go / AssemblyScript are
+compiled by an isolated builder service (no secrets, no network egress) and the
+resulting `.wasm` runs in the sim. WAT and the Rules DSL compile in-process.
+
+Prefer to compile yourself? The universal fallback works anywhere, in any
+language that targets WASM:
 
 1. Compile your bot to a `.wasm` **locally** (commands per language below).
-2. In the browser, pick **Upload .wasm** in the language dropdown, set your
-   player name, and **Upload & Run**.
-
-WAT and the Rules DSL need no toolchain at all — you can type them straight into
-the editor and hit Run.
+2. In the browser, pick **Upload .wasm**, set your player name, **Upload & Run**.
 
 ## Language support
 

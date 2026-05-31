@@ -102,6 +102,23 @@ defmodule Convoy.CompileTest do
     end
   end
 
+  describe "remote builder routing" do
+    setup do
+      on_exit(fn -> System.delete_env("CONVOY_BUILDER_URL") end)
+    end
+
+    test "compiled languages report available when a builder is configured" do
+      System.put_env("CONVOY_BUILDER_URL", "http://localhost:1")
+      for lang <- [:rust, :tinygo, :assemblyscript], do: assert Compile.available?(lang)
+    end
+
+    test "an unreachable builder surfaces a clear error" do
+      System.put_env("CONVOY_BUILDER_URL", "http://localhost:1")
+      assert {:error, msg} = Compile.to_wasm(:rust, "fn decide() {}")
+      assert msg =~ "unreachable"
+    end
+  end
+
   test "missing toolchains report unavailable with an install hint" do
     for lang <- [:rust, :tinygo, :assemblyscript] do
       unless Compile.available?(lang) do

@@ -1,0 +1,68 @@
+# The sandboxed compile service. Holds the language toolchains and nothing
+# else: no app secrets, no service-account token, egress denied by NetworkPolicy
+# (see builder-networkpolicy.yaml). Untrusted source is compiled here, never in
+# the app pod. Blast radius = this throwaway pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: convoy-builder
+  namespace: convoy
+  labels:
+    app: convoy-builder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: convoy-builder
+  template:
+    metadata:
+      labels:
+        app: convoy-builder
+    spec:
+      # No cluster API access from a pod that runs untrusted compiles.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: builder
+          image: ghcr.io/jhgaylor/convoy-builder:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          volumeMounts:
+            # Build scratch (mkdtemp). emptyDir so nothing persists between
+            # compiles and a disk-fill is bounded by the volume.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi

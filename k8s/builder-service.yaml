@@ -1,0 +1,17 @@
+# In-cluster only (ClusterIP, no ingress). The app reaches it at
+# http://convoy-builder.convoy.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: convoy-builder
+  namespace: convoy
+  labels:
+    app: convoy-builder
+spec:
+  type: ClusterIP
+  selector:
+    app: convoy-builder
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

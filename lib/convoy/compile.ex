@@ -49,19 +49,55 @@ defmodule Convoy.Compile do
   Wasmtime compiles it directly). Returns `{:ok, bytes_or_wat}` or
   `{:error, message}`.
   """
+  @compiled [:assemblyscript, :rust, :tinygo]
+
   @spec to_wasm(atom(), binary()) :: {:ok, binary()} | {:error, String.t()}
   def to_wasm(:wat, source), do: {:ok, source}
-  def to_wasm(:assemblyscript, source), do: compile_assemblyscript(source)
-  def to_wasm(:rust, source), do: compile_rust(source)
-  def to_wasm(:tinygo, source), do: compile_tinygo(source)
 
-  @doc "Is the toolchain for this language available on this host?"
+  def to_wasm(lang, source) when lang in @compiled do
+    # If a sandboxed builder service is configured (prod), delegate compilation
+    # to it — untrusted source never runs a toolchain inside the app pod. In
+    # dev, fall back to local toolchains.
+    case builder_url() do
+      nil -> compile_locally(lang, source)
+      url -> compile_remote(url, lang, source)
+    end
+  end
+
+  defp compile_locally(:assemblyscript, source), do: compile_assemblyscript(source)
+  defp compile_locally(:rust, source), do: compile_rust(source)
+  defp compile_locally(:tinygo, source), do: compile_tinygo(source)
+
+  @doc "Is the toolchain for this language available (via the builder, or locally)?"
   @spec available?(atom()) :: boolean()
   def available?(:wat), do: true
-  def available?(:assemblyscript), do: File.exists?(asc_bin())
-  def available?(:rust), do: not is_nil(rustc_bin())
-  def available?(:tinygo), do: not is_nil(System.find_executable("tinygo"))
+  def available?(lang) when lang in @compiled, do: not is_nil(builder_url()) or local_available?(lang)
   def available?(_), do: false
+
+  defp local_available?(:assemblyscript), do: File.exists?(asc_bin())
+  defp local_available?(:rust), do: not is_nil(rustc_bin())
+  defp local_available?(:tinygo), do: not is_nil(System.find_executable("tinygo"))
+
+  # --- remote builder (sandboxed compile service) ---
+
+  defp builder_url do
+    case System.get_env("CONVOY_BUILDER_URL") do
+      url when is_binary(url) and url != "" -> String.trim_trailing(url, "/")
+      _ -> nil
+    end
+  end
+
+  defp compile_remote(url, lang, source) do
+    _ = :inets.start()
+    body = Jason.encode!(%{language: Atom.to_string(lang), source: source})
+    request = {String.to_charlist(url <> "/compile"), [], ~c"application/json", body}
+
+    case :httpc.request(:post, request, [{:timeout, 30_000}], body_format: :binary) do
+      {:ok, {{_v, 200, _r}, _h, wasm}} -> {:ok, wasm}
+      {:ok, {{_v, _code, _r}, _h, err}} -> {:error, String.trim(to_string(err))}
+      {:error, reason} -> {:error, "builder unreachable: #{inspect(reason)}"}
+    end
+  end
 
   @doc "How to install a missing toolchain."
   def install_hint(:rust),

@@ -12,3 +12,7 @@ resources:
   - service.yaml
   - ingressroute.yaml
   - certificates.yaml
+  # Sandboxed compile service (toolchains, no secrets, egress denied).
+  - builder-deployment.yaml
+  - builder-service.yaml
+  - builder-networkpolicy.yaml
