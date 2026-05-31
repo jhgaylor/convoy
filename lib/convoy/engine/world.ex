@@ -80,6 +80,9 @@ defmodule Convoy.Engine.World do
 
     {resources, _rng} = place_resources(seed, width, height, base)
 
+    # A fresh world has NO players — they join explicitly via add_player/3
+    # (a CLI/API submission, or the in-browser editor's Run). The browser is a
+    # spectator until then.
     %World{
       region_id: region_id,
       seed: seed,
@@ -93,11 +96,9 @@ defmodule Convoy.Engine.World do
       next_entity_id: 1,
       events: ["Region #{region_id} initialized from seed #{seed}."]
     }
-    # Seed a default player so solo play (and tests) start with harvesters.
-    |> add_player(@default_player)
   end
 
-  @doc "The default player id (the one the in-browser editor controls)."
+  @doc "The default player id used when a submission doesn't name one."
   @spec default_player() :: player_id()
   def default_player, do: @default_player
 

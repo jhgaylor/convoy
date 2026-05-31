@@ -65,7 +65,9 @@ defmodule Convoy.PersistenceTest do
 
     assert after_restart.world.tick >= before.world.tick
     assert after_restart.world.tick > 0
-    assert after_restart.backend == :rules
+    # The submitted player and its program were restored, and it's still running.
+    assert Map.has_key?(after_restart.players, "p1")
+    assert after_restart.players["p1"].backend == :rules
     assert after_restart.status == :running
     assert after_restart.world.region_id == id
 

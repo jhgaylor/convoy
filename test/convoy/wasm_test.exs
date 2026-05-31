@@ -151,8 +151,8 @@ defmodule Convoy.WasmTest do
 
     {:ok, instance} = Wasm.instantiate(Wasm.default_source())
 
-    rules_world = World.generate(seed: 9) |> Sim.run(rules, 200)
-    wasm_world = World.generate(seed: 9) |> Sim.run(wasm_decider(instance), 200)
+    rules_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(rules, 200)
+    wasm_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(wasm_decider(instance), 200)
 
     assert World.total_delivered(wasm_world) == World.total_delivered(rules_world)
     assert World.total_delivered(wasm_world) > 0
@@ -167,8 +167,8 @@ defmodule Convoy.WasmTest do
     {:ok, a} = Wasm.instantiate(Wasm.default_source())
     {:ok, b} = Wasm.instantiate(Wasm.default_source())
 
-    run_a = World.generate(seed: 4) |> Sim.run(wasm_decider(a), 150)
-    run_b = World.generate(seed: 4) |> Sim.run(wasm_decider(b), 150)
+    run_a = World.generate(seed: 4) |> World.add_player("p1") |> Sim.run(wasm_decider(a), 150)
+    run_b = World.generate(seed: 4) |> World.add_player("p1") |> Sim.run(wasm_decider(b), 150)
     assert run_a == run_b
 
     Wasm.stop(a)

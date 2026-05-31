@@ -15,6 +15,9 @@ defmodule Convoy.EngineTest do
     rules
   end
 
+  # A world with one player's harvesters (generate now starts empty).
+  defp solo(seed), do: World.generate(seed: seed) |> World.add_player("p1")
+
   test "the default program compiles to four rules" do
     assert {:ok, rules} = Program.compile(@program)
     assert length(rules) == 4
@@ -55,20 +58,20 @@ defmodule Convoy.EngineTest do
   # freeze/replay guarantee).
   test "the tick loop is deterministic across independent runs" do
     rules = rules()
-    run_a = World.generate(seed: 7) |> Sim.run(rules, 200)
-    run_b = World.generate(seed: 7) |> Sim.run(rules, 200)
+    run_a = solo(7) |> Sim.run(rules, 200)
+    run_b = solo(7) |> Sim.run(rules, 200)
     assert run_a == run_b
   end
 
   test "harvesters actually deliver ore to the base over time" do
-    final = World.generate(seed: 7) |> Sim.run(rules(), 200)
+    final = solo(7) |> Sim.run(rules(), 200)
     assert World.total_delivered(final) > 0
     assert final.tick == 200
   end
 
   test "the sim conserves ore: delivered + in-cargo + in-ground == initial + spawned" do
     rules = rules()
-    initial = World.generate(seed: 3)
+    initial = solo(3)
     total = World.ore_remaining(initial)
 
     final = Sim.run(initial, rules, 150)
@@ -102,7 +105,7 @@ defmodule Convoy.EngineTest do
   end
 
   test "the region never runs dry over a long run" do
-    final = World.generate(seed: 4) |> Sim.run(rules(), 1000)
+    final = solo(4) |> Sim.run(rules(), 1000)
     assert World.ore_remaining(final) > 0
     assert World.resource_node_count(final) >= 1
     assert final.replenished > 0
@@ -110,7 +113,7 @@ defmodule Convoy.EngineTest do
 
   test "player code cannot move an entity outside the grid" do
     rules = rules()
-    final = World.generate(seed: 5) |> Sim.run(rules, 300)
+    final = solo(5) |> Sim.run(rules, 300)
 
     for e <- final.entities do
       assert e.x in 0..(final.width - 1)

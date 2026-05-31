@@ -51,7 +51,8 @@ Open `http://localhost:4000/?region=arena` to watch the scoreboard and the
 colour-coded harvesters compete for ore. The shared world arbitrates conflicts
 authoritatively (resolved in entity-id order, single-writer), so two players
 reaching for the last ore in a cell is decided fairly and deterministically.
-The in-browser editor controls player `p1`; the CLI/API add the rest.
+The browser is a **spectator** — it never auto-joins. You join by submitting
+code: set the editor's "play as" name and Run, or `mix convoy.run --player NAME`.
 
 Prefer the terminal? `--headless` runs the sim in-process and renders ASCII —
 no server, no browser, the fastest loop:
@@ -89,7 +90,8 @@ speaks HTTP can drive a region.
 
 ## Persistence (surviving deploys)
 
-Named/durable regions snapshot their state to disk (`data/regions/<id>.snapshot`)
+Every region is a durable, shared world (`/` is the default `main`; `?region=NAME`
+picks another). Regions snapshot their state to disk (`data/regions/<id>.snapshot`)
 periodically, on code load, on reset, and on graceful shutdown. On boot,
 `Engine.restore_all/0` brings them back online and they resume **at the exact
 tick they stopped**, still running whatever program was loaded — so deploying a
@@ -103,7 +105,8 @@ behaves identically. A `version` + field-shape guard discards snapshots from an
 older schema (a deploy that changes the world's shape starts that region fresh
 rather than crashing).
 
-Per-tab anonymous regions (`/` with no `?region=`) stay in-memory and ephemeral.
+The browser is a spectator: opening a region never creates a player, and an
+empty region just shows the map until someone submits.
 | **Route a session to its region** (§9) | `ConvoyWeb.SimLive` subscribes over PubSub and sends commands |
 
 ## The program language
@@ -204,8 +207,9 @@ A region is a shared world with many players. Each player submits their own
 program and owns a set of harvesters; the tick loop runs each entity's *owner's*
 program, then resolves all intents in entity-id order (single-writer), so
 competition for ore is arbitrated fairly and deterministically. Scoring is
-per-player (`World.scores`). The browser editor drives player `p1`; others join
-via `mix convoy.run --player NAME` / the HTTP API. Players, their programs, and
+per-player (`World.scores`). The browser only spectates until you submit; you
+join as a named player via the editor's "play as" field or `mix convoy.run
+--player NAME` / the HTTP API. Players, their programs, and
 scores are all part of the persisted snapshot, so a shared game survives deploys.
 
 ## Not yet built (next milestones, per the primer)

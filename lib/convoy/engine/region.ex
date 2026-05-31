@@ -271,25 +271,12 @@ defmodule Convoy.Engine.Region do
 
   # --- initial state + restore ---
 
+  # A fresh region has no players — it's an empty world waiting for submissions.
   defp default_state(id, seed, persist) do
-    source = Program.default_source()
-    {:ok, rules} = Program.compile(source)
-
-    editor = %{
-      id: World.default_player(),
-      backend: :rules,
-      rules: rules,
-      wasm: nil,
-      exec: source,
-      source: source,
-      fuel_budget: @default_fuel_budget,
-      compile_error: nil
-    }
-
     %State{
       id: id,
       world: World.generate(seed: seed, region_id: id),
-      players: %{World.default_player() => editor},
+      players: %{},
       status: :paused,
       tick_ms: @default_tick_ms,
       timer: nil,
@@ -394,23 +381,19 @@ defmodule Convoy.Engine.Region do
     Phoenix.PubSub.broadcast(Convoy.PubSub, topic(state.id), {:region_update, public(state)})
   end
 
+  # The region is a spectator surface: it broadcasts the shared world + the
+  # roster, not any one "editor" program. The browser holds its own draft and
+  # submits as whatever player the user names.
   defp public(state) do
-    editor = state.players[World.default_player()]
-
     %{
       id: state.id,
       world: state.world,
       status: state.status,
       tick_ms: state.tick_ms,
       last_fuel: state.last_fuel,
+      fuel_budget: @default_fuel_budget,
       scores: state.world.scores,
-      players: player_summaries(state),
-      editor_player: World.default_player(),
-      # Editor (p1) program info, for the in-browser editor:
-      backend: editor.backend,
-      source: editor.source,
-      fuel_budget: editor.fuel_budget,
-      compile_error: editor.compile_error
+      players: player_summaries(state)
     }
   end
 

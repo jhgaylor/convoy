@@ -8,12 +8,27 @@ defmodule ConvoyWeb.RegionControllerTest do
 
     conn = post(conn, ~p"/api/region/#{id}/program", %{language: "rules", source: "otherwise idle"})
 
-    assert %{"status" => "ok", "region" => ^id, "backend" => "rules"} = json_response(conn, 200)
+    assert %{"status" => "ok", "region" => ^id, "player" => "p1", "backend" => "rules"} =
+             json_response(conn, 200)
 
-    # The region now exists and is running the loaded program.
+    # The region now exists, the default player joined, and it's running.
     snap = Engine.snapshot(id)
     assert snap.status == :running
-    assert snap.backend == :rules
+    assert snap.players["p1"].backend == :rules
+    assert Enum.any?(snap.world.entities, &(&1.owner == "p1"))
+  end
+
+  test "submitting two players shares one world", %{conn: conn} do
+    id = "test-#{System.unique_integer([:positive])}"
+    prog = "otherwise to_resource"
+
+    post(conn, ~p"/api/region/#{id}/program", %{player: "alice", language: "rules", source: prog})
+    post(conn, ~p"/api/region/#{id}/program", %{player: "bob", language: "rules", source: prog})
+
+    snap = Engine.snapshot(id)
+    assert Enum.sort(Map.keys(snap.scores)) == ["alice", "bob"]
+    owners = snap.world.entities |> Enum.map(& &1.owner) |> Enum.uniq() |> Enum.sort()
+    assert owners == ["alice", "bob"]
   end
 
   test "POST with WAT loads on the wasm backend", %{conn: conn} do

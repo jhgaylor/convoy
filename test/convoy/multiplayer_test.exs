@@ -16,8 +16,12 @@ defmodule Convoy.MultiplayerTest do
     rules
   end
 
-  test "generate seeds the default player; add_player adds more, idempotently" do
+  test "a fresh world has no players; add_player adds them, idempotently" do
     world = World.generate(seed: 1)
+    assert World.players(world) == []
+    assert world.entities == []
+
+    world = World.add_player(world, "p1")
     assert World.players(world) == ["p1"]
     assert length(world.entities) == World.harvesters_per_player()
     assert Enum.all?(world.entities, &(&1.owner == "p1"))
@@ -36,7 +40,7 @@ defmodule Convoy.MultiplayerTest do
 
   test "two players score independently in one shared world" do
     rules = worker_rules()
-    world = World.generate(seed: 7) |> World.add_player("p2")
+    world = World.generate(seed: 7) |> World.add_player("p1") |> World.add_player("p2")
     decider = fn entity, w -> Program.eval(rules, entity, w) end
 
     final = Sim.run(world, decider, 200)
@@ -50,7 +54,7 @@ defmodule Convoy.MultiplayerTest do
     worker = worker_rules()
     {:ok, idler} = Program.compile("otherwise idle")
 
-    build = fn -> World.generate(seed: 3) |> World.add_player("p2") end
+    build = fn -> World.generate(seed: 3) |> World.add_player("p1") |> World.add_player("p2") end
 
     # p1 works, p2 idles — programs dispatched per entity owner.
     decider = fn e, w ->
@@ -79,11 +83,19 @@ defmodule Convoy.MultiplayerTest do
     assert snap.scores["idle"] == 0
     assert snap.scores["worker"] > 0
 
-    # Both players' harvesters share the one world (plus the default p1).
-    owners = snap.world.entities |> Enum.map(& &1.owner) |> Enum.uniq()
-    assert "idle" in owners
-    assert "worker" in owners
-    assert "p1" in owners
+    # Only the submitted players exist in the shared world — no phantom default.
+    owners = snap.world.entities |> Enum.map(& &1.owner) |> Enum.uniq() |> Enum.sort()
+    assert owners == ["idle", "worker"]
     assert Map.has_key?(snap.players, "worker")
+  end
+
+  test "a fresh region has no players until someone submits" do
+    id = "empty-#{System.unique_integer([:positive])}"
+    Engine.ensure_region(id)
+    snap = Engine.snapshot(id)
+
+    assert snap.scores == %{}
+    assert snap.world.entities == []
+    assert snap.players == %{}
   end
 end

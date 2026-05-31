@@ -33,14 +33,12 @@ defmodule ConvoyWeb.SimLive do
 
   @impl true
   def mount(params, _session, socket) do
-    # A `?region=NAME` lets a browser watch a stable, named region — the one
-    # the `convoy.run` CLI pushes code into. Without it, each tab gets its own
-    # throwaway region for casual play.
+    # Every region is a durable, shared world. `/` watches "main"; `?region=NAME`
+    # watches another. The browser is a spectator — it never auto-creates a
+    # player. You join only by submitting code (Run here, or `mix convoy.run`).
     id = region_id(params)
-    named? = named_region?(params)
     seed = 1
-    # Named regions are durable: their state survives restarts/deploys.
-    Engine.ensure_region(id, seed: seed, persist: named?)
+    Engine.ensure_region(id, seed: seed, persist: true)
 
     if connected?(socket), do: Phoenix.PubSub.subscribe(Convoy.PubSub, Engine.topic(id))
 
@@ -49,30 +47,28 @@ defmodule ConvoyWeb.SimLive do
     {:ok,
      socket
      |> assign(:region_id, id)
-     |> assign(:named?, named?)
      |> assign(:seed, seed)
      |> assign(:speeds, @speeds)
      |> assign(:languages, @languages)
-     # Start the editor aligned with whatever is already loaded, so a tab that
-     # is just *watching* a CLI-driven region doesn't mislabel the program.
-     |> assign(:language, language_for_backend(snap.backend))
+     |> assign(:language, :rules)
+     # The player name this tab submits as; not joined until first Run.
+     |> assign(:player_draft, "p1")
+     |> assign(:my_player, nil)
      |> assign(:local_error, nil)
+     |> assign(:source_draft, template_for(:rules))
      |> assign_snapshot(snap)
-     |> assign(:source_draft, snap.source)
      |> allow_upload(:wasm, accept: ~w(.wasm), max_entries: 1, max_file_size: 8_000_000)}
   end
-
-  defp language_for_backend(:wasm), do: :wat
-  defp language_for_backend(_), do: :rules
 
   # --- commands from the UI ---
 
   @impl true
-  def handle_event("source_changed", %{"source" => source}, socket) do
-    {:noreply, assign(socket, :source_draft, source)}
+  def handle_event("source_changed", %{"source" => source} = params, socket) do
+    {:noreply, assign(socket, source_draft: source, player_draft: player_param(params, socket))}
   end
 
-  def handle_event("run", %{"source" => source}, socket) do
+  def handle_event("run", %{"source" => source} = params, socket) do
+    socket = assign(socket, :player_draft, player_param(params, socket))
     {:noreply, compile_load_play(socket, source)}
   end
 
@@ -94,16 +90,18 @@ defmodule ConvoyWeb.SimLive do
 
     socket = assign(socket, language: lang, source_draft: source, local_error: nil)
 
-    # The rule DSL loads instantly; compiled/uploaded languages wait for Run.
-    if lang == :rules, do: Engine.load_program(socket.assigns.region_id, :rules, source, source)
-
+    # Switching language just loads a template into the editor — no submission
+    # until Run, so picking a language doesn't make you join.
     {:noreply, socket}
   end
 
-  def handle_event("validate_upload", _params, socket), do: {:noreply, socket}
+  def handle_event("validate_upload", params, socket) do
+    {:noreply, assign(socket, :player_draft, player_param(params, socket))}
+  end
 
-  def handle_event("upload_wasm", _params, socket) do
+  def handle_event("upload_wasm", params, socket) do
     id = socket.assigns.region_id
+    player = player_param(params, socket)
 
     consumed =
       consume_uploaded_entries(socket, :wasm, fn %{path: path}, entry ->
@@ -115,12 +113,12 @@ defmodule ConvoyWeb.SimLive do
         [{bytes, name}] ->
           display = "#{name} · #{byte_size(bytes)} bytes (uploaded)"
 
-          case Engine.load_program(id, :wasm, bytes, display) do
+          case Engine.submit_player(id, player, :wasm, bytes, display) do
             :ok -> Engine.play(id)
             {:error, _msg} -> :noop
           end
 
-          assign(socket, local_error: nil)
+          assign(socket, local_error: nil, player_draft: player, my_player: player)
 
         [] ->
           assign(socket, local_error: "Choose a .wasm file first.")
@@ -152,21 +150,22 @@ defmodule ConvoyWeb.SimLive do
     {:noreply, assign_snapshot(socket, snap)}
   end
 
-  # Compile (if needed), load into the region, and start running. Compile
-  # failures surface as @local_error; instantiation/DSL failures come back from
-  # the region as @compile_error.
+  # Compile (if needed) and submit as the chosen player, then run. Compile
+  # failures surface as @local_error; instantiation failures come back from the
+  # region (shown per-player in the scoreboard and via program_status).
   defp compile_load_play(socket, source) do
     id = socket.assigns.region_id
+    player = socket.assigns.player_draft
     socket = assign(socket, source_draft: source)
 
     case Loader.prepare(socket.assigns.language, source) do
       {:ok, backend, exec, display} ->
-        case Engine.load_program(id, backend, exec, display) do
+        case Engine.submit_player(id, player, backend, exec, display) do
           :ok -> Engine.play(id)
           {:error, _msg} -> :noop
         end
 
-        assign(socket, :local_error, nil)
+        assign(socket, local_error: nil, my_player: player)
 
       {:error, msg} ->
         assign(socket, :local_error, msg)
@@ -176,33 +175,37 @@ defmodule ConvoyWeb.SimLive do
   defp assign_snapshot(socket, snap) do
     socket
     |> assign(:world, snap.world)
-    |> assign(:backend, snap.backend)
     |> assign(:status, snap.status)
-    |> assign(:source, snap.source)
     |> assign(:tick_ms, snap.tick_ms)
     |> assign(:fuel_budget, snap.fuel_budget)
     |> assign(:last_fuel, snap.last_fuel)
-    |> assign(:compile_error, snap.compile_error)
     |> assign(:scores, snap.scores)
     |> assign(:players, snap.players)
-    |> assign(:editor_player, snap.editor_player)
   end
 
+  # The player name to submit as: the form field if present, else the current draft.
+  defp player_param(params, socket) do
+    case params["player"] do
+      p when is_binary(p) ->
+        case String.replace(p, ~r/[^a-zA-Z0-9_-]/, "") do
+          "" -> socket.assigns.player_draft
+          clean -> clean
+        end
+
+      _ ->
+        socket.assigns.player_draft
+    end
+  end
+
+  # Every region is a named, shared world. `/` is the default "main" world.
   defp region_id(%{"region" => name}) when is_binary(name) and name != "" do
-    # keep ids tame: lowercase, alnum/dash/underscore only
-    slug = name |> String.downcase() |> String.replace(~r/[^a-z0-9_-]/, "")
-    if slug == "", do: random_region(), else: slug
+    case name |> String.downcase() |> String.replace(~r/[^a-z0-9_-]/, "") do
+      "" -> "main"
+      slug -> slug
+    end
   end
 
-  defp region_id(_params), do: random_region()
-
-  defp named_region?(%{"region" => name}) when is_binary(name) and name != "" do
-    String.replace(name, ~r/[^a-z0-9_-]/i, "") != ""
-  end
-
-  defp named_region?(_), do: false
-
-  defp random_region, do: "region-" <> Integer.to_string(System.unique_integer([:positive]))
+  defp region_id(_params), do: "main"
 
   defp parse_seed(seed) do
     case Integer.parse(String.trim(seed)) do
@@ -231,9 +234,8 @@ defmodule ConvoyWeb.SimLive do
           <.stat label="tick" value={@world.tick} />
           <.stat label="delivered" value={World.total_delivered(@world)} accent="text-emerald-400" />
           <.stat label="ore left" value={World.ore_remaining(@world)} accent="text-amber-400" />
-          <%= if @backend == :wasm do %>
-            <.stat label="fuel/tick" value={@last_fuel} accent="text-fuchsia-400" />
-          <% end %>
+          <.stat label="players" value={map_size(@scores)} accent="text-sky-400" />
+          <.stat label="fuel/tick" value={@last_fuel} accent="text-fuchsia-400" />
           <span class={[
             "px-2 py-0.5 rounded text-xs font-mono uppercase",
             @status == :running && "bg-emerald-500/20 text-emerald-300",
@@ -247,14 +249,11 @@ defmodule ConvoyWeb.SimLive do
       <div class="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6 p-6">
         <%!-- left: the code editor + controls --%>
         <section class="space-y-4">
-          <%= if @named? do %>
-            <div class="text-xs bg-sky-500/10 border border-sky-500/40 text-sky-200 rounded-lg p-2 mb-3">
-              📡 Watching region <span class="font-mono font-semibold">{@region_id}</span>.
-              Develop locally and push from your editor:
-              <code class="block mt-1 text-sky-300">mix convoy.run YOUR_BOT --region {@region_id} --watch</code>
-              You can still edit and Run here too.
-            </div>
-          <% end %>
+          <div class="text-xs bg-sky-500/10 border border-sky-500/40 text-sky-200 rounded-lg p-2 mb-3">
+            📡 Spectating region <span class="font-mono font-semibold">{@region_id}</span>.
+            Join by submitting code below, or from your editor:
+            <code class="block mt-1 text-sky-300">mix convoy.run YOUR_BOT --region {@region_id} --player NAME --watch</code>
+          </div>
 
           <form phx-change="set_language" class="flex items-center gap-2 mb-1">
             <span class="text-xs uppercase tracking-wide text-slate-400">language</span>
@@ -274,7 +273,18 @@ defmodule ConvoyWeb.SimLive do
           <%= if @language == :upload do %>
             <%!-- bring a precompiled .wasm from any language --%>
             <form phx-change="validate_upload" phx-submit="upload_wasm">
-              <label class="text-xs uppercase tracking-wide text-slate-400">Upload a .wasm module</label>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-xs uppercase tracking-wide text-slate-400">Upload a .wasm module</label>
+                <label class="text-xs text-slate-400 flex items-center gap-1">
+                  play as
+                  <input
+                    type="text"
+                    name="player"
+                    value={@player_draft}
+                    class="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono text-slate-100"
+                  />
+                </label>
+              </div>
               <div class="mt-1 border border-dashed border-slate-700 rounded-lg p-4 bg-slate-900 text-center text-sm">
                 <.live_file_input upload={@uploads.wasm} class="text-xs text-slate-300" />
                 <p class="mt-2 text-[11px] text-slate-500">
@@ -298,9 +308,20 @@ defmodule ConvoyWeb.SimLive do
             </form>
           <% else %>
             <form phx-change="source_changed" phx-submit="run">
-              <label class="text-xs uppercase tracking-wide text-slate-400">
-                Harvester program · {lang_label(@languages, @language)}
-              </label>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-xs uppercase tracking-wide text-slate-400">
+                  Harvester program · {lang_label(@languages, @language)}
+                </label>
+                <label class="text-xs text-slate-400 flex items-center gap-1">
+                  play as
+                  <input
+                    type="text"
+                    name="player"
+                    value={@player_draft}
+                    class="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono text-slate-100"
+                  />
+                </label>
+              </div>
               <textarea
                 name="source"
                 spellcheck="false"
@@ -316,7 +337,7 @@ defmodule ConvoyWeb.SimLive do
                 </div>
               <% end %>
 
-              <.program_status local_error={@local_error} compile_error={@compile_error} />
+              <.program_status local_error={@local_error} compile_error={player_error(@players, @my_player)} />
 
               <div class="mt-3 flex flex-wrap gap-2">
                 <button
@@ -387,7 +408,7 @@ defmodule ConvoyWeb.SimLive do
 
         <%!-- right: the world --%>
         <section class="space-y-4">
-          <.scoreboard scores={@scores} players={@players} editor_player={@editor_player} />
+          <.scoreboard scores={@scores} players={@players} my_player={@my_player} />
           <.grid world={@world} />
           <.entities world={@world} />
           <.event_log world={@world} />
@@ -414,7 +435,7 @@ defmodule ConvoyWeb.SimLive do
 
   attr :scores, :map, required: true
   attr :players, :map, required: true
-  attr :editor_player, :string, required: true
+  attr :my_player, :string, default: nil
 
   defp scoreboard(assigns) do
     ~H"""
@@ -423,13 +444,16 @@ defmodule ConvoyWeb.SimLive do
         <div class="text-xs uppercase tracking-wide text-slate-400">Players</div>
         <div class="text-[10px] text-slate-500">submit more with <code class="text-slate-400">mix convoy.run --player</code></div>
       </div>
+      <%= if @scores == %{} do %>
+        <div class="text-xs text-slate-500">No players yet — submit code to join.</div>
+      <% end %>
       <div class="space-y-1">
         <%= for {player, score} <- Enum.sort_by(@scores, fn {_p, s} -> -s end) do %>
           <% color = player_color(player) %>
           <div class="flex items-center gap-2 text-sm">
             <span class={["w-2.5 h-2.5 rounded-full", color.dot]}></span>
             <span class={["font-mono", color.text]}>{player}</span>
-            <%= if player == @editor_player do %>
+            <%= if player == @my_player do %>
               <span class="text-[10px] text-slate-500">(you)</span>
             <% end %>
             <%= if err = get_in(@players, [player, :compile_error]) do %>
@@ -584,6 +608,9 @@ defmodule ConvoyWeb.SimLive do
       nil -> to_string(id)
     end
   end
+
+  defp player_error(_players, nil), do: nil
+  defp player_error(players, player), do: get_in(players, [player, :compile_error])
 
   defp error_to_string(:too_large), do: "file too large (max 8 MB)"
   defp error_to_string(:not_accepted), do: "not a .wasm file"

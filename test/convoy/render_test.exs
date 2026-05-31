@@ -12,7 +12,7 @@ defmodule Convoy.Engine.RenderTest do
   test "the base shows as B once harvesters move off it" do
     {:ok, rules} = Program.compile("otherwise to_resource")
     # a few ticks so the harvesters leave the base cell (they all start on it)
-    grid = World.generate(seed: 1) |> Sim.run(rules, 3) |> Render.grid()
+    grid = World.generate(seed: 1) |> World.add_player("p1") |> Sim.run(rules, 3) |> Render.grid()
     assert grid =~ "B"
   end
 
@@ -25,7 +25,7 @@ defmodule Convoy.Engine.RenderTest do
   end
 
   test "harvesters render as their id digit" do
-    world = World.generate(seed: 1)
+    world = World.generate(seed: 1) |> World.add_player("p1")
     # all harvesters start on the base cell, so the base shows a digit, not B
     assert Render.grid(world) =~ "1"
   end

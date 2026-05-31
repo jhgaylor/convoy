@@ -20,14 +20,14 @@ defmodule Convoy.CompileTest do
       otherwise        to_resource
       """)
 
-    World.generate(seed: 9) |> Sim.run(rules, 200)
+    World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(rules, 200)
   end
 
   # A compiled module must behave exactly like the canonical rule program —
   # that's the proof the ABI + template are correct, end to end.
   defp assert_parity_with_rules(wasm_bytes) do
     {:ok, instance} = Wasm.instantiate(wasm_bytes)
-    wasm_world = World.generate(seed: 9) |> Sim.run(wasm_decider(instance), 200)
+    wasm_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(wasm_decider(instance), 200)
     baseline = rules_baseline()
 
     assert World.total_delivered(wasm_world) == World.total_delivered(baseline)
