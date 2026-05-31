@@ -106,6 +106,24 @@ defmodule Convoy.WasmTest do
     Wasm.stop(instance)
   end
 
+  test "intent code 6 routes toward the farthest resource, code 4 toward the nearest" do
+    seek = fn code -> "(module (func (export \"decide\") #{@abi} (i32.const #{code})))" end
+
+    # Near node is east (1,0); far node is south (0,10) — different directions,
+    # so the first step distinguishes "nearest" from "farthest".
+    world = %{World.generate(seed: 1) | resources: %{{1, 0} => 5, {0, 10} => 5}}
+    e = %{id: 1, x: 0, y: 0, cargo: 0, cargo_max: 5, last_action: :idle}
+
+    {:ok, near} = Wasm.instantiate(seek.(4))
+    {:ok, far} = Wasm.instantiate(seek.(6))
+
+    assert {:ok, {:move, {1, 0}}, _} = Wasm.decide(near, e, world, 50_000)
+    assert {:ok, {:move, {0, 1}}, _} = Wasm.decide(far, e, world, 50_000)
+
+    Wasm.stop(near)
+    Wasm.stop(far)
+  end
+
   # The payoff: the WAT harvester reproduces the rule-DSL behaviour exactly.
   test "the WAT harvester delivers identically to the equivalent rule program" do
     {:ok, rules} =

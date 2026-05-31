@@ -31,6 +31,7 @@ defmodule Convoy.Engine.Wasm do
   | 3 | move toward base |
   | 4 | move toward nearest resource |
   | 5 | wander (deterministic) |
+  | 6 | move toward farthest resource |
   | 10/11/12/13 | move +x / -x / +y / -y |
   | anything else (incl. 0) | idle |
 
@@ -197,19 +198,18 @@ defmodule Convoy.Engine.Wasm do
   defp code_to_intent(2, _e, _w), do: :unload
   defp code_to_intent(3, e, w), do: {:move, World.step_toward({e.x, e.y}, w.base)}
 
-  defp code_to_intent(4, e, w) do
-    case World.nearest_resource(w, {e.x, e.y}) do
-      nil -> {:move, World.step_toward({e.x, e.y}, w.base)}
-      target -> {:move, World.step_toward({e.x, e.y}, target)}
-    end
-  end
-
+  defp code_to_intent(4, e, w), do: seek(e, w, World.nearest_resource(w, {e.x, e.y}))
   defp code_to_intent(5, e, w), do: {:move, World.wander_dir(w.seed, w.tick, e.id)}
+  defp code_to_intent(6, e, w), do: seek(e, w, World.farthest_resource(w, {e.x, e.y}))
   defp code_to_intent(10, _e, _w), do: {:move, {1, 0}}
   defp code_to_intent(11, _e, _w), do: {:move, {-1, 0}}
   defp code_to_intent(12, _e, _w), do: {:move, {0, 1}}
   defp code_to_intent(13, _e, _w), do: {:move, {0, -1}}
   defp code_to_intent(_other, _e, _w), do: :idle
+
+  # Step toward a target resource (or home if the map is empty).
+  defp seek(e, w, nil), do: {:move, World.step_toward({e.x, e.y}, w.base)}
+  defp seek(e, _w, target), do: {:move, World.step_toward({e.x, e.y}, target)}
 
   # --- helpers ---
 

@@ -136,12 +136,18 @@ defmodule Convoy.Engine.World do
 
   @doc "Nearest cell still holding ore, by Manhattan distance (deterministic tie-break)."
   @spec nearest_resource(t(), pos()) :: pos() | nil
-  def nearest_resource(%World{resources: r}, {x, y}) do
+  def nearest_resource(%World{} = world, pos), do: pick_resource(world, pos, &Enum.min_by/3)
+
+  @doc "Farthest cell still holding ore, by Manhattan distance (deterministic tie-break)."
+  @spec farthest_resource(t(), pos()) :: pos() | nil
+  def farthest_resource(%World{} = world, pos), do: pick_resource(world, pos, &Enum.max_by/3)
+
+  defp pick_resource(%World{resources: r}, {x, y}, chooser) do
     r
     |> Enum.filter(fn {_pos, amt} -> amt > 0 end)
     |> Enum.map(fn {pos, _amt} -> pos end)
     |> Enum.sort()
-    |> Enum.min_by(fn {rx, ry} -> abs(rx - x) + abs(ry - y) end, fn -> nil end)
+    |> chooser.(fn {rx, ry} -> abs(rx - x) + abs(ry - y) end, fn -> nil end)
   end
 
   @doc """

@@ -38,6 +38,18 @@ defmodule Convoy.EngineTest do
     refute World.generate(seed: 1).resources == World.generate(seed: 2).resources
   end
 
+  test "nearest/farthest_resource pick the closest/most-distant node" do
+    world = %{World.generate(seed: 1) | resources: %{{1, 0} => 5, {14, 8} => 5}}
+    assert World.nearest_resource(world, {0, 0}) == {1, 0}
+    assert World.farthest_resource(world, {0, 0}) == {14, 8}
+  end
+
+  test "farthest_resource is deterministic and returns nil on an empty map" do
+    world = %{World.generate(seed: 1) | resources: %{{2, 2} => 1, {9, 9} => 1}}
+    assert World.farthest_resource(world, {0, 0}) == World.farthest_resource(world, {0, 0})
+    assert World.farthest_resource(%{world | resources: %{}}, {0, 0}) == nil
+  end
+
   # The primer §11 acceptance test, in miniature: running the same program
   # from the same seed must be bit-identical across independent runs (the
   # freeze/replay guarantee).

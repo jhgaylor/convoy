@@ -1,9 +1,9 @@
-// The classic harvester, in Rust. Compiled single-file to wasm32.
+// A harvester that clears the FARTHEST deposit first, in Rust.
 //   mix convoy.run examples/harvester.rs --watch
 //
 // Export `decide`; return an intent code:
-//   1 harvest · 2 unload · 3 to_base · 4 to_resource · 5 wander
-//   10/11/12/13 move +x/-x/+y/-y · anything else idle
+//   1 harvest · 2 unload · 3 to_base · 4 to_resource (nearest) · 5 wander
+//   6 to_far_resource (farthest) · 10/11/12/13 move +x/-x/+y/-y · else idle
 #![no_std]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
@@ -29,5 +29,5 @@ pub extern "C" fn decide(
     if on_resource != 0 {
         return 1; // harvest
     }
-    4 // seek nearest ore
+    6 // seek the FARTHEST ore first, then work back toward base
 }
