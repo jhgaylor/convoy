@@ -77,10 +77,20 @@ B · · · · · · · · · · · · · · ·
 tick 120  delivered 100  in-cargo 10  ore-left 130
 ```
 
-Key flags: `--region NAME` (default `dev`), `--server URL`, `--headless`,
-`--ticks N`, `--seed N`, `--watch`, `--lang LANG`. Full help: `mix help convoy.run`.
-Under the hood the CLI POSTs to `POST /api/region/:id/program`, so anything that
-speaks HTTP can drive a region.
+Key flags: `--region NAME` (default `dev`), `--player NAME`, `--server URL`,
+`--headless`, `--ticks N`, `--seed N`, `--watch`, `--lang LANG`. Full help:
+`mix help convoy.run`. Under the hood the CLI POSTs to
+`POST /api/region/:id/program`, so anything that speaks HTTP can drive a region.
+
+## Writing a bot
+
+New here? **[docs/writing-bots.md](docs/writing-bots.md)** is the getting-started
+guide: the `decide` ABI, how to run a bot (locally or by uploading a `.wasm`),
+and per-language setup. Bots compile to a zero-import WASM module exporting
+`decide`. First-class languages: **Rust**, **Go (TinyGo)**, **AssemblyScript**
+(the JS/TS path), and **WAT**. Starters live in [`examples/`](examples/). Plain
+JS, Ruby, and Python aren't supported (they'd need a whole interpreter in WASM —
+the doc explains why; use AssemblyScript for a scripting feel).
 
 ## What v1 implements (and how it maps to the primer)
 

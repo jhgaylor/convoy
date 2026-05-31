@@ -67,7 +67,7 @@ defmodule Convoy.Compile do
   def install_hint(:rust),
     do: "Install Rust + the wasm target: `curl https://sh.rustup.rs -sSf | sh` then `rustup target add wasm32-unknown-unknown`."
 
-  def install_hint(:tinygo), do: "Install TinyGo: `brew install tinygo` (needs LLVM)."
+  def install_hint(:tinygo), do: "Install TinyGo: `brew install tinygo-org/tools/tinygo` (needs LLVM)."
   def install_hint(:assemblyscript), do: "Run `npm install assemblyscript` in priv/asc."
   def install_hint(_), do: nil
 
@@ -190,7 +190,15 @@ defmodule Convoy.Compile do
           out_file = Path.join(dir, "bot.wasm")
           File.write!(in_file, source)
 
-          run(bin, ["build", "-o", out_file, "-target=wasm", "-no-debug", in_file], out_file)
+          # `wasm-unknown`: a freestanding target with NO host imports (no WASI,
+          # no JS runtime) — required because the sim instantiates modules with
+          # an empty import set. `-scheduler=none -gc=leaking` keep a pure
+          # `//export decide` function from pulling in runtime imports.
+          run(
+            bin,
+            ["build", "-o", out_file, "-target=wasm-unknown", "-scheduler=none", "-gc=leaking", "-no-debug", in_file],
+            out_file
+          )
         end)
     end
   end

@@ -87,6 +87,21 @@ defmodule Convoy.CompileTest do
     end
   end
 
+  describe "Go (TinyGo)" do
+    @describetag :tinygo
+
+    test "compiles the template to a zero-import wasm-unknown module matching the rules" do
+      if Compile.available?(:tinygo) do
+        assert {:ok, bytes} = Compile.to_wasm(:tinygo, Compile.template(:tinygo))
+        # Instantiating with an empty import set proves the wasm-unknown target
+        # produced no host imports — the whole reason for that target choice.
+        assert_parity_with_rules(bytes)
+      else
+        IO.puts("[skip] TinyGo toolchain not installed")
+      end
+    end
+  end
+
   test "missing toolchains report unavailable with an install hint" do
     for lang <- [:rust, :tinygo, :assemblyscript] do
       unless Compile.available?(lang) do
