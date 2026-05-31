@@ -20,10 +20,12 @@ defmodule ConvoyWeb.Router do
     live "/", SimLive, :index
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", ConvoyWeb do
-  #   pipe_through :api
-  # end
+  scope "/api", ConvoyWeb do
+    pipe_through :api
+
+    # Push player code into a region from outside the browser (the convoy.run CLI).
+    post "/region/:id/program", RegionController, :load
+  end
 
   # Enable LiveDashboard in development
   if Application.compile_env(:convoy, :dev_routes) do

@@ -19,6 +19,43 @@ mix phx.server   # http://localhost:4000
 Then open the page, edit the harvester program on the left, press **Run**, and
 watch your agents harvest ore and deliver it to base on the grid.
 
+## Local dev workflow (write code in your editor, watch it in the sim)
+
+You don't have to write bots in the website. Develop in your editor, run one
+command, and the browser becomes a live viewer. The language is inferred from
+the file extension (`.rules .wat .rs .ts .go .wasm`).
+
+```bash
+# terminal 1
+mix phx.server
+
+# terminal 2 — push your bot into region "dev" and keep re-pushing on save
+mix convoy.run examples/harvester.rs --watch
+```
+
+Open `http://localhost:4000/?region=dev` and just watch. Each save recompiles
+and reloads the running region. Edit `examples/harvester.rs`, save, see it change.
+
+Prefer the terminal? `--headless` runs the sim in-process and renders ASCII —
+no server, no browser, the fastest loop:
+
+```bash
+mix convoy.run examples/harvester.rules --headless --ticks 300
+```
+
+```
+B · · · · · · · · · · · · · · ·
+· · · · · · · · 2 · * · · · · ·
+3 · · · · · · · · · · · · · · ·
+· · 1 · · · · · * · · · * · · ·
+tick 120  delivered 100  in-cargo 10  ore-left 130
+```
+
+Key flags: `--region NAME` (default `dev`), `--server URL`, `--headless`,
+`--ticks N`, `--seed N`, `--watch`, `--lang LANG`. Full help: `mix help convoy.run`.
+Under the hood the CLI POSTs to `POST /api/region/:id/program`, so anything that
+speaks HTTP can drive a region.
+
 ## What v1 implements (and how it maps to the primer)
 
 | Primer concept | Where it lives |
@@ -30,6 +67,7 @@ watch your agents harvest ore and deliver it to base on the grid.
 | **Seeded determinism / free replays** (§6, §11): same seed + same program → bit-identical result | `World.generate/1` (LCG), `:erlang.phash2` for `wander`; proven for *both* backends in tests |
 | **Region = single-writer process** (§4, §9) advancing autonomously | `Convoy.Engine.Region` GenServer; ticks on a timer, owns the WASM instance |
 | **Region registry / scale-to-zero** (§10): regions started on demand, located by id | `Registry` + `DynamicSupervisor` in `application.ex`; `Convoy.Engine.ensure_region/2` |
+| **Local dev loop**: author in your editor, watch in the sim | `mix convoy.run` + `POST /api/region/:id/program` + named regions (`/?region=NAME`) |
 | **Route a session to its region** (§9) | `ConvoyWeb.SimLive` subscribes over PubSub and sends commands |
 
 ## The program language

@@ -10,9 +10,8 @@ defmodule ConvoyWeb.SimLive do
   """
   use ConvoyWeb, :live_view
 
-  alias Convoy.Engine
+  alias Convoy.{Engine, Compile, Loader}
   alias Convoy.Engine.{World, Program, Wasm}
-  alias Convoy.Compile
 
   @speeds [{"0.5x", 800}, {"1x", 400}, {"2x", 200}, {"4x", 100}]
 
@@ -32,21 +31,13 @@ defmodule ConvoyWeb.SimLive do
   defp template_for(:upload), do: ""
   defp template_for(lang), do: Compile.template(lang)
 
-  # Which execution backend + bytes a language produces. Compilation (the
-  # risky part) happens here, in front of the sim — never inside it.
-  defp prepare(:rules, source), do: {:ok, :rules, source, source}
-  defp prepare(:wat, source), do: {:ok, :wasm, source, source}
-
-  defp prepare(lang, source) when lang in [:assemblyscript, :rust, :tinygo] do
-    case Compile.to_wasm(lang, source) do
-      {:ok, bytes} -> {:ok, :wasm, bytes, source}
-      {:error, msg} -> {:error, msg}
-    end
-  end
-
   @impl true
-  def mount(_params, _session, socket) do
-    id = "region-" <> Integer.to_string(System.unique_integer([:positive]))
+  def mount(params, _session, socket) do
+    # A `?region=NAME` lets a browser watch a stable, named region — the one
+    # the `convoy.run` CLI pushes code into. Without it, each tab gets its own
+    # throwaway region for casual play.
+    id = region_id(params)
+    named? = named_region?(params)
     seed = 1
     Engine.ensure_region(id, seed: seed)
 
@@ -57,15 +48,21 @@ defmodule ConvoyWeb.SimLive do
     {:ok,
      socket
      |> assign(:region_id, id)
+     |> assign(:named?, named?)
      |> assign(:seed, seed)
      |> assign(:speeds, @speeds)
      |> assign(:languages, @languages)
-     |> assign(:language, :rules)
+     # Start the editor aligned with whatever is already loaded, so a tab that
+     # is just *watching* a CLI-driven region doesn't mislabel the program.
+     |> assign(:language, language_for_backend(snap.backend))
      |> assign(:local_error, nil)
      |> assign_snapshot(snap)
      |> assign(:source_draft, snap.source)
      |> allow_upload(:wasm, accept: ~w(.wasm), max_entries: 1, max_file_size: 8_000_000)}
   end
+
+  defp language_for_backend(:wasm), do: :wat
+  defp language_for_backend(_), do: :rules
 
   # --- commands from the UI ---
 
@@ -161,7 +158,7 @@ defmodule ConvoyWeb.SimLive do
     id = socket.assigns.region_id
     socket = assign(socket, source_draft: source)
 
-    case prepare(socket.assigns.language, source) do
+    case Loader.prepare(socket.assigns.language, source) do
       {:ok, backend, exec, display} ->
         case Engine.load_program(id, backend, exec, display) do
           :ok -> Engine.play(id)
@@ -186,6 +183,22 @@ defmodule ConvoyWeb.SimLive do
     |> assign(:last_fuel, snap.last_fuel)
     |> assign(:compile_error, snap.compile_error)
   end
+
+  defp region_id(%{"region" => name}) when is_binary(name) and name != "" do
+    # keep ids tame: lowercase, alnum/dash/underscore only
+    slug = name |> String.downcase() |> String.replace(~r/[^a-z0-9_-]/, "")
+    if slug == "", do: random_region(), else: slug
+  end
+
+  defp region_id(_params), do: random_region()
+
+  defp named_region?(%{"region" => name}) when is_binary(name) and name != "" do
+    String.replace(name, ~r/[^a-z0-9_-]/i, "") != ""
+  end
+
+  defp named_region?(_), do: false
+
+  defp random_region, do: "region-" <> Integer.to_string(System.unique_integer([:positive]))
 
   defp parse_seed(seed) do
     case Integer.parse(String.trim(seed)) do
@@ -230,6 +243,15 @@ defmodule ConvoyWeb.SimLive do
       <div class="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6 p-6">
         <%!-- left: the code editor + controls --%>
         <section class="space-y-4">
+          <%= if @named? do %>
+            <div class="text-xs bg-sky-500/10 border border-sky-500/40 text-sky-200 rounded-lg p-2 mb-3">
+              📡 Watching region <span class="font-mono font-semibold">{@region_id}</span>.
+              Develop locally and push from your editor:
+              <code class="block mt-1 text-sky-300">mix convoy.run YOUR_BOT --region {@region_id} --watch</code>
+              You can still edit and Run here too.
+            </div>
+          <% end %>
+
           <form phx-change="set_language" class="flex items-center gap-2 mb-1">
             <span class="text-xs uppercase tracking-wide text-slate-400">language</span>
             <select
