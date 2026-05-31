@@ -54,15 +54,46 @@ defmodule Convoy.EngineTest do
     assert final.tick == 200
   end
 
-  test "the sim conserves ore: delivered + in-cargo + in-ground == initial" do
+  test "the sim conserves ore: delivered + in-cargo + in-ground == initial + spawned" do
     rules = rules()
     initial = World.generate(seed: 3)
     total = World.ore_remaining(initial)
 
     final = Sim.run(initial, rules, 150)
     in_cargo = final.entities |> Enum.map(& &1.cargo) |> Enum.sum()
+    spawned = final.replenished * World.resource_amount()
 
-    assert final.delivered + in_cargo + World.ore_remaining(final) == total
+    assert final.delivered + in_cargo + World.ore_remaining(final) == total + spawned
+  end
+
+  test "a dwindling map spawns a fresh deposit at its last node" do
+    world = %{World.generate(seed: 1) | resources: %{{5, 5} => 3}}
+    assert World.resource_node_count(world) == 1
+
+    {world, pos} = World.maybe_spawn_resource(world)
+    assert pos != nil
+    assert World.resource_node_count(world) == 2
+    assert World.resource_at(world, pos) == World.resource_amount()
+    assert world.replenished == 1
+  end
+
+  test "no deposit spawns while several remain" do
+    world = World.generate(seed: 1)
+    assert {^world, nil} = World.maybe_spawn_resource(world)
+  end
+
+  test "spawn placement is deterministic for the same seed + tick" do
+    world = %{World.generate(seed: 2) | resources: %{{3, 3} => 1}, tick: 17}
+    {_, a} = World.maybe_spawn_resource(world)
+    {_, b} = World.maybe_spawn_resource(world)
+    assert a == b
+  end
+
+  test "the region never runs dry over a long run" do
+    final = World.generate(seed: 4) |> Sim.run(rules(), 1000)
+    assert World.ore_remaining(final) > 0
+    assert World.resource_node_count(final) >= 1
+    assert final.replenished > 0
   end
 
   test "player code cannot move an entity outside the grid" do

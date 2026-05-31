@@ -67,7 +67,20 @@ defmodule Convoy.Engine.Sim do
   @spec apply_intents(World.t(), [{pos_integer(), term()}]) :: World.t()
   def apply_intents(%World{} = world, intents) do
     world = Enum.reduce(intents, world, fn {id, intent}, acc -> resolve(acc, id, intent) end)
-    %{world | tick: world.tick + 1, events: Enum.take(world.events, @max_events)}
+
+    world
+    |> Map.update!(:tick, &(&1 + 1))
+    |> replenish()
+    |> Map.update!(:events, &Enum.take(&1, @max_events))
+  end
+
+  # Keep the region from being mined to a dead end: spawn a fresh deposit when
+  # it drops to its last one (deterministic — see World.maybe_spawn_resource/1).
+  defp replenish(world) do
+    case World.maybe_spawn_resource(world) do
+      {world, nil} -> world
+      {world, pos} -> note(world, "A new ore deposit (#{World.resource_amount()}) appeared at #{fmt(pos)}.")
+    end
   end
 
   @doc "Run `n` ticks. Used for replay / fast-forward verification (primer §11)."

@@ -33,6 +33,7 @@ defmodule Convoy.Engine.World do
             resources: %{},
             entities: [],
             delivered: 0,
+            replenished: 0,
             events: []
 
   @type t :: %World{
@@ -45,6 +46,7 @@ defmodule Convoy.Engine.World do
           resources: %{pos() => non_neg_integer()},
           entities: [entity()],
           delivered: non_neg_integer(),
+          replenished: non_neg_integer(),
           events: [String.t()]
         }
 
@@ -52,6 +54,9 @@ defmodule Convoy.Engine.World do
   @resource_amount 40
   @harvesters 3
   @cargo_max 5
+  # Spawn a fresh deposit when the map drops to this many nodes (or fewer), so
+  # a region can never be mined to a dead end.
+  @replenish_threshold 1
 
   @doc """
   Build a fresh world deterministically from a seed.
@@ -86,6 +91,39 @@ defmodule Convoy.Engine.World do
       delivered: 0,
       events: ["Region #{region_id} initialized from seed #{seed}."]
     }
+  end
+
+  @doc "The ore amount a freshly-spawned (or generated) deposit holds."
+  @spec resource_amount() :: pos_integer()
+  def resource_amount, do: @resource_amount
+
+  @doc "How many distinct deposits still hold ore."
+  @spec resource_node_count(t()) :: non_neg_integer()
+  def resource_node_count(%World{resources: r}), do: map_size(r)
+
+  @doc """
+  If the map has dwindled to its last deposit (or fewer), add a fresh one at a
+  deterministic free cell and return `{world, spawned_pos}`. Otherwise return
+  `{world, nil}` unchanged.
+
+  Placement derives from `{seed, tick}` so replays stay bit-identical (§6) — no
+  wall-clock, no `:rand`. The sim calls this each tick after resolving intents.
+  """
+  @spec maybe_spawn_resource(t()) :: {t(), pos() | nil}
+  def maybe_spawn_resource(%World{} = world) do
+    if map_size(world.resources) <= @replenish_threshold do
+      pos = spawn_cell(world)
+
+      world = %{
+        world
+        | resources: Map.put(world.resources, pos, @resource_amount),
+          replenished: world.replenished + 1
+      }
+
+      {world, pos}
+    else
+      {world, nil}
+    end
   end
 
   @doc "Total ore still sitting in the ground."
@@ -135,6 +173,31 @@ defmodule Convoy.Engine.World do
       _ -> {0, -1}
     end
   end
+
+  # --- deterministic spawn placement ---
+
+  # Pick a free cell (not the base, not an existing deposit) deterministically
+  # from {seed, tick}, probing forward until one is free.
+  defp spawn_cell(%World{} = world) do
+    base_hash = :erlang.phash2({world.seed, world.tick})
+    find_free_cell(world, base_hash, 0)
+  end
+
+  defp find_free_cell(%World{width: w, height: h, base: base} = world, base_hash, attempt)
+       when attempt < w * h do
+    n = :erlang.phash2({base_hash, attempt})
+    pos = {rem(n, w), rem(div(n, w), h)}
+
+    if pos == base or Map.has_key?(world.resources, pos) do
+      find_free_cell(world, base_hash, attempt + 1)
+    else
+      pos
+    end
+  end
+
+  # Grid is entirely full of deposits — can't happen below the threshold, but
+  # fall back to the base cell rather than loop forever.
+  defp find_free_cell(%World{base: base}, _base_hash, _attempt), do: base
 
   # --- deterministic generation helpers ---
 
