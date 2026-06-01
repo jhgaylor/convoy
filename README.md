@@ -100,8 +100,9 @@ rustc --target wasm32-unknown-unknown -O --crate-type cdylib -o bot.wasm bot.rs
 
 The sim is **deterministic** (seed-derived randomness only) so the same seed +
 programs reproduce bit-identically — the foundation for replays and fair PvP.
-Colony regions are currently **in-memory** (a deploy restarts them); snapshot
-persistence is on the roadmap.
+Colony regions **persist** to disk (each player's program + bot memory, the
+colonies, and the market) and are restored on boot, so colonies survive restarts
+and deploys. `/admin` is the ops overview (per-region status + controls).
 
 ## Tests
 

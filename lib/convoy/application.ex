@@ -31,7 +31,11 @@ defmodule Convoy.Application do
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Convoy.Supervisor]
 
-    Supervisor.start_link(children, opts)
+    with {:ok, pid} <- Supervisor.start_link(children, opts) do
+      # Bring persisted colony regions back online so colonies resume across deploys.
+      Convoy.Engine.Colony.Region.restore_all()
+      {:ok, pid}
+    end
   end
 
   # Tell Phoenix to update the endpoint configuration

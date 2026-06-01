@@ -83,6 +83,9 @@ defmodule Convoy.Engine.Colony.World do
   def default_config, do: @default_config
   defp cfg(%World{config: c}, k), do: Map.get(c, k, Map.fetch!(@default_config, k))
 
+  @doc "Merge current defaults under a (possibly older) config, so a restored colony gains any new knobs."
+  def ensure_config(%World{config: c} = w), do: %{w | config: Map.merge(@default_config, c || %{})}
+
   @doc "Build a fresh colony deterministically from a seed: a built spawner at (0,0), `start_units` harvesters, and a deterministic ore layout."
   @spec generate(keyword()) :: t :: %World{}
   def generate(opts \\ []) do

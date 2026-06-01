@@ -20,6 +20,8 @@ defmodule ConvoyWeb.Router do
     # Forge & Convoy — the colony game (program one brain per colony, ship convoys
     # across the shared contested market). This is the game.
     live "/", ColonyLive, :index
+    # Ops overview of colony regions. Put behind auth before exposing publicly.
+    live "/admin", ColonyAdminLive, :index
   end
 
   scope "/api", ConvoyWeb do

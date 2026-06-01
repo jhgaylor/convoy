@@ -15,13 +15,23 @@ defmodule Convoy.Engine.Colony.Region do
   """
   use GenServer
 
-  alias Convoy.Engine.Colony.{World, Sim, Market}
+  alias Convoy.Engine.Colony.{World, Sim, Market, Persistence}
   alias Convoy.Engine.ColonyWasm
 
   @fuel 5_000_000
   @default_ms 400
   @width 16
   @height 12
+  @snapshot_every 50
+
+  @doc "Bring every persisted colony region back online (called on boot)."
+  def restore_all do
+    if Application.get_env(:convoy, :restore_on_boot, true) do
+      for id <- Persistence.region_ids(), do: ensure(id)
+    end
+
+    :ok
+  end
 
   # convoy-steering ops (match Convoy.Engine.ColonyAbi)
   @op_move 2
@@ -54,6 +64,23 @@ defmodule Convoy.Engine.Colony.Region do
   @doc "Submit/replace a player's colony brain (compiled wasm/wat bytes). Joins the player if new."
   def submit_player(id, player, exec, display), do: call(id, {:submit, clean(player), exec, display})
 
+  @doc "Ids of all live colony regions."
+  def list, do: Registry.select(Convoy.Engine.ColonyRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+
+  @doc "Stop a region's process (it snapshots on the way out, so it resumes when next opened)."
+  def stop(id) do
+    case Registry.lookup(Convoy.Engine.ColonyRegistry, id) do
+      [{pid, _}] -> DynamicSupervisor.terminate_child(Convoy.Engine.RegionSupervisor, pid)
+      [] -> :ok
+    end
+  end
+
+  @doc "Stop a region and delete its snapshot for good."
+  def delete(id) do
+    stop(id)
+    Persistence.delete(id)
+  end
+
   defp call(id, msg), do: GenServer.call(via(id), msg)
   defp cast(id, msg), do: GenServer.cast(via(id), msg)
 
@@ -68,11 +95,13 @@ defmodule Convoy.Engine.Colony.Region do
 
   @impl true
   def init(opts) do
-    seed = Keyword.get(opts, :seed, 1)
+    # trap exits so terminate/2 runs on supervisor shutdown → we snapshot on the
+    # way out (a deploy/restart resumes the colonies where they left off).
+    Process.flag(:trap_exit, true)
 
     state = %{
       id: Keyword.fetch!(opts, :id),
-      seed: seed,
+      seed: Keyword.get(opts, :seed, 1),
       colonies: %{},
       brains: %{},
       market: Market.new(@width, @height),
@@ -83,12 +112,13 @@ defmodule Convoy.Engine.Colony.Region do
       observers: MapSet.new()
     }
 
-    # Seed bundled bot colonies so the room is alive out of the box. Every region
-    # gets `demo`; the public `main` room also gets a `shipper` and a `builder`
-    # with distinct strategies, so its market is genuinely contested.
-    state = seed_residents(state)
-    {:ok, schedule(state)}
+    # Restore a persisted snapshot if one exists; otherwise seed the bundled bot
+    # colonies (every region gets `demo`; `main` also gets `shipper` + `builder`).
+    {:ok, schedule(restore_or_seed(state))}
   end
+
+  @impl true
+  def terminate(_reason, state), do: persist(state)
 
   @impl true
   def handle_call(:snapshot, _from, state), do: {:reply, public(state), state}
@@ -100,14 +130,15 @@ defmodule Convoy.Engine.Colony.Region do
         state =
           state
           |> ensure_colony(player)
-          |> put_in([Access.key(:brains), player], %{inst: inst, display: display, error: nil})
+          |> put_in([Access.key(:brains), player], %{inst: inst, exec: exec, display: display, error: nil})
           |> Map.put(:status, :running)
+          |> persist()
 
         broadcast(state)
         {:reply, :ok, schedule(state)}
 
       {:error, msg} ->
-        state = update_in(state.brains, &Map.put(&1, player, %{inst: nil, display: display, error: msg}))
+        state = update_in(state.brains, &Map.put(&1, player, %{inst: nil, exec: exec, display: display, error: msg}))
         broadcast(state)
         {:reply, {:error, msg}, state}
     end
@@ -123,7 +154,7 @@ defmodule Convoy.Engine.Colony.Region do
     # regenerate every player's colony + a fresh market, keep their brains
     colonies = Map.new(state.colonies, fn {p, _} -> {p, World.generate(seed: colony_seed(seed, p))} end)
     state = %{state | seed: seed, colonies: colonies, market: Market.new(@width, @height), tick: 0}
-    {:noreply, broadcast(state)}
+    {:noreply, broadcast(persist(state))}
   end
 
   def handle_cast({:observe, pid}, state) do
@@ -134,7 +165,7 @@ defmodule Convoy.Engine.Colony.Region do
   @impl true
   def handle_info(:tick, state) do
     state = if state.status == :running, do: advance(state), else: state
-    {:noreply, schedule(broadcast(state))}
+    {:noreply, schedule(broadcast(maybe_persist(state)))}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _}, state), do: {:noreply, %{state | observers: MapSet.delete(state.observers, pid)}}
@@ -233,10 +264,91 @@ defmodule Convoy.Engine.Colony.Region do
          {:ok, inst} <- ColonyWasm.instantiate(bytes) do
       state
       |> ensure_colony(name)
-      |> put_in([Access.key(:brains), name], %{inst: inst, display: display, error: nil})
+      |> put_in([Access.key(:brains), name], %{inst: inst, exec: bytes, display: display, error: nil})
     else
       _ -> state
     end
+  end
+
+  # --- persistence (snapshot + restore across restarts/deploys) ---
+
+  defp restore_or_seed(state) do
+    case Persistence.load(state.id) do
+      {:ok, snap} -> rebuild(state, snap)
+      :error -> seed_residents(state)
+    end
+  rescue
+    _ -> seed_residents(state)
+  end
+
+  # Rebuild a region from a snapshot: restore the colonies + market + tick, and
+  # re-instantiate each player's brain from its stored bytes + memory. A snapshot
+  # whose struct shape doesn't match the current code is discarded (fresh seed).
+  defp rebuild(state, snap) do
+    if valid_snapshot?(snap) do
+      colonies = Map.new(snap.colonies, fn {p, w} -> {p, World.ensure_config(w)} end)
+      brains = Map.new(snap.players, fn {p, pl} -> {p, reinstantiate(pl)} end)
+
+      %{
+        state
+        | seed: snap.seed,
+          tick: snap.tick,
+          tick_ms: Map.get(snap, :tick_ms, @default_ms),
+          status: snap.status,
+          colonies: colonies,
+          market: snap.market,
+          brains: brains
+      }
+    else
+      seed_residents(state)
+    end
+  end
+
+  defp reinstantiate(%{exec: exec} = pl) when is_binary(exec) do
+    case ColonyWasm.instantiate(exec) do
+      {:ok, inst} ->
+        ColonyWasm.restore_memory(inst, pl[:memory])
+        %{inst: inst, exec: exec, display: pl[:display], error: nil}
+
+      {:error, msg} ->
+        %{inst: nil, exec: exec, display: pl[:display], error: msg}
+    end
+  end
+
+  defp reinstantiate(pl), do: %{inst: nil, exec: nil, display: pl[:display], error: pl[:error]}
+
+  defp valid_snapshot?(snap) do
+    is_map(Map.get(snap, :colonies)) and match?(%Market{}, Map.get(snap, :market)) and
+      same_shape?(snap.market, %Market{}) and
+      Enum.all?(Map.values(snap.colonies), fn w -> match?(%World{}, w) and same_shape?(w, %World{}) end)
+  rescue
+    _ -> false
+  end
+
+  defp same_shape?(a, b), do: Map.keys(a) == Map.keys(b)
+
+  # Snapshot every @snapshot_every ticks (cheap insurance between event-driven saves).
+  defp maybe_persist(%{tick: t} = state) when rem(t, @snapshot_every) == 0, do: persist(state)
+  defp maybe_persist(state), do: state
+
+  defp persist(state) do
+    players =
+      Map.new(state.brains, fn {p, b} ->
+        {p, %{exec: b[:exec], display: b[:display], error: b[:error], memory: ColonyWasm.snapshot_memory(b[:inst])}}
+      end)
+
+    Persistence.save(%{
+      region_id: state.id,
+      seed: state.seed,
+      tick: state.tick,
+      tick_ms: state.tick_ms,
+      status: state.status,
+      colonies: state.colonies,
+      market: state.market,
+      players: players
+    })
+
+    state
   end
 
   # --- broadcast / snapshot ---

@@ -41,8 +41,11 @@ from different colonies collide and seize each other's shipments (the only PvP).
 - **Intents, never mutations.** The brain returns commands; `Colony.Sim` / `Market`
   resolve them authoritatively. **Set wasm fuel BEFORE any guest call** (even
   `inbuf`/`outbuf` trap on a zero budget).
-- **Colony regions are in-memory** (no persistence yet) and keyed in their own
-  `Convoy.Engine.ColonyRegistry`; a `demo` colony auto-loads the bundled bot.
+- **Colony regions persist** to disk (`Convoy.Engine.Colony.Persistence`,
+  `data/colony/<id>.snapshot`): colonies + market + each player's program bytes &
+  bot memory, snapshotted every 50 ticks + on submit/reset/shutdown, restored on
+  boot (`Region.restore_all`). Keyed in their own `Convoy.Engine.ColonyRegistry`.
+  `main` auto-seeds `demo`/`shipper`/`builder` on first boot; `/admin` is the ops page.
 - **Run tests with toolchains on PATH:** `export PATH="$HOME/.cargo/bin:$PATH" && mix test`.
   Tests that compile a real bot self-skip if Rust is absent.
 - **The cluster is arm64** (Apple Silicon). Images build `linux/arm64`.

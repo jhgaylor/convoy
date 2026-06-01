@@ -10,9 +10,9 @@ import Config
 config :convoy,
   generators: [timestamp_type: :utc_datetime]
 
-# Durable region snapshots (primer §8). `dir` is where snapshots are written;
-# `restore_on_boot` brings persisted regions back online at startup.
-config :convoy, Convoy.Persistence, dir: "data/regions"
+# Durable colony-region snapshots (primer §8). `dir` is where snapshots are
+# written; `restore_on_boot` brings persisted regions back online at startup.
+config :convoy, Convoy.Engine.Colony.Persistence, dir: "data/colony"
 config :convoy, :restore_on_boot, true
 
 # Configure the endpoint

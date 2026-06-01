@@ -9,9 +9,19 @@ defmodule ConvoyWeb.ColonyLive do
   use ConvoyWeb, :live_view
 
   alias Convoy.Engine.Colony.{World, Market, Region}
-  alias Convoy.Loader
+  alias Convoy.{Loader, Compile}
 
   @speeds [{"0.5x", 800}, {"1x", 400}, {"2x", 200}, {"4x", 100}]
+
+  # Languages for the getting-started panel: {id, label, file ext, lang param}.
+  @langs [
+    {:rust, "Rust", "rs", "rust"},
+    {:tinygo, "Go", "go", "tinygo"},
+    {:assemblyscript, "AssemblyScript", "ts", "assemblyscript"},
+    {:zig, "Zig", "zig", "zig"},
+    {:c, "C", "c", "c"},
+    {:wat, "WAT", "wat", "wat"}
+  ]
 
   @ext_lang %{".rs" => :rust, ".go" => :tinygo, ".ts" => :assemblyscript, ".zig" => :zig, ".c" => :c, ".wat" => :wat, ".wasm" => :wasm}
 
@@ -28,10 +38,13 @@ defmodule ConvoyWeb.ColonyLive do
     {:ok,
      socket
      |> assign(:region_id, id)
+     |> assign(:base_url, ConvoyWeb.Endpoint.url())
      |> assign(:speeds, @speeds)
      |> assign(:upload_player, "p1")
      |> assign(:my_player, nil)
      |> assign(:upload_error, nil)
+     |> assign(:active_tab, :rust)
+     |> assign(:show_help, false)
      |> assign_snapshot(Region.snapshot(id))
      |> allow_upload(:bot, accept: :any, max_entries: 1, max_file_size: 8_000_000)}
   end
@@ -45,6 +58,8 @@ defmodule ConvoyWeb.ColonyLive do
   def handle_event("step", _, s), do: ctl(s, &Region.step/1)
   def handle_event("reset", _, s), do: ctl(s, &Region.reset(&1, 1))
   def handle_event("set_speed", %{"ms" => ms}, s), do: ctl(s, &Region.set_speed(&1, String.to_integer(ms)))
+  def handle_event("set_tab", %{"tab" => tab}, socket), do: {:noreply, assign(socket, :active_tab, String.to_existing_atom(tab))}
+  def handle_event("toggle_help", _, socket), do: {:noreply, update(socket, :show_help, &(not &1))}
   def handle_event("validate_upload", params, socket), do: {:noreply, assign(socket, :upload_player, clean(params["player"], socket.assigns.upload_player))}
 
   def handle_event("upload_bot", params, socket) do
@@ -126,6 +141,7 @@ defmodule ConvoyWeb.ColonyLive do
           <h1 class="text-xl font-bold tracking-tight">
             <span class="text-amber-400">Forge</span> &amp; <span class="text-sky-400">Convoy</span>
             <span class="ml-2 text-xs font-normal text-slate-500">region {@region_id}</span>
+            <.link navigate={~p"/admin"} class="ml-2 text-xs font-normal text-sky-400 hover:underline">admin</.link>
           </h1>
           <p class="text-xs text-slate-500 mt-0.5">
             Program one brain per colony. Mine, forge, build, and run convoys across the contested market.
@@ -155,6 +171,7 @@ defmodule ConvoyWeb.ColonyLive do
         <section class="space-y-4">
           <.scoreboard players={@players} my_player={@my_player} />
           <.submit_panel uploads={@uploads} upload_player={@upload_player} upload_error={@upload_error} />
+          <.getting_started show_help={@show_help} active_tab={@active_tab} region_id={@region_id} base_url={@base_url} />
           <.legend />
         </section>
       </div>
@@ -306,6 +323,56 @@ defmodule ConvoyWeb.ColonyLive do
       </div>
       <p :if={@upload_error} class="mt-2 text-[11px] font-mono text-rose-300 whitespace-pre-wrap">⛔ {@upload_error}</p>
     </form>
+    """
+  end
+
+  attr :show_help, :boolean, required: true
+  attr :active_tab, :atom, required: true
+  attr :region_id, :string, required: true
+  attr :base_url, :string, required: true
+
+  defp getting_started(assigns) do
+    {_, _, ext, lang} = Enum.find(@langs, fn {id, _, _, _} -> id == assigns.active_tab end)
+    assigns = assign(assigns, ext: ext, lang: lang, code: Compile.template(assigns.active_tab), langs: @langs)
+
+    ~H"""
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-400">
+      <button type="button" phx-click="toggle_help" class="w-full flex items-center justify-between text-slate-300 font-semibold">
+        <span>Getting started — write a bot</span>
+        <span class="text-slate-500">{if @show_help, do: "▲", else: "▼"}</span>
+      </button>
+      <div :if={@show_help} class="mt-2 space-y-2">
+        <p>
+          Your bot is a tiny WebAssembly module that exports <code class="text-fuchsia-300">inbuf</code>/<code class="text-fuchsia-300">outbuf</code>/<code class="text-fuchsia-300">tick</code>.
+          Each tick the sim writes your colony's view into <code>inbuf</code>, calls <code>tick</code>, and reads a list of commands from <code>outbuf</code>.
+        </p>
+
+        <div class="flex flex-wrap gap-1">
+          <%= for {id, label, _e, _l} <- @langs do %>
+            <button type="button" phx-click="set_tab" phx-value-tab={id} class={[
+              "px-2 py-0.5 rounded text-xs font-mono",
+              @active_tab == id && "bg-emerald-500 text-slate-950",
+              @active_tab != id && "bg-slate-800 hover:bg-slate-700 text-slate-300"
+            ]}>{label}</button>
+          <% end %>
+        </div>
+
+        <div class="text-[10px] uppercase tracking-wide text-slate-500 mt-1">starter · bot.{@ext}</div>
+        <pre class="bg-slate-950 rounded p-2 text-[10.5px] leading-snug text-emerald-200 overflow-auto max-h-72">{@code}</pre>
+
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">send it</div>
+        <pre class="bg-slate-950 rounded p-2 text-[10.5px] text-sky-200 overflow-x-auto whitespace-pre-wrap">curl --data-binary @bot.{@ext} -H 'Content-Type: application/octet-stream' {@base_url}/api/region/{@region_id}/upload?player=YOU&amp;lang={@lang}</pre>
+        <div class="text-[10px] text-slate-500">or upload it with the panel above, or: <code>mix convoy.run bot.{@ext} --region {@region_id} --player YOU</code></div>
+
+        <div class="pt-1 border-t border-slate-800">
+          <div class="text-slate-300 mb-1">commands your <code>tick</code> can emit (16-byte records)</div>
+          <code class="text-fuchsia-300 text-[10.5px] leading-relaxed block">
+            1 harvest(unit) · 2 move(unit, dx, dy) · 3 transfer(unit, building) · 4 build(kind, x«8|y) · 5 spawn(kind) · 7 launch_convoy · 8 defend(convoy) · 9 hunt(convoy)
+          </code>
+          <p class="text-slate-500 mt-1">Full wire format: <code>lib/convoy/engine/colony_abi.ex</code>. Full reference bot: <code>examples/colony.rs</code> (builds refineries, spawns, ships).</p>
+        </div>
+      </div>
+    </div>
     """
   end
 

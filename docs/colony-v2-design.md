@@ -52,11 +52,17 @@ Status: APPROVED · Mode: Builder
   `Persistence`, `SimLive`, `AdminLive`, `Sparkline`, the v1 examples + tests. Verified
   in a browser: two colonies contest the market, convoys collide and one **seizes**
   the other's shipment, credits accrue. **28 tests, 0 failures.**
+- **Phase 5 — DONE (onboarding + ops + persistence).** All six per-language starter
+  templates rewritten to the colony `tick` ABI (Rust/AS/TinyGo/WAT compile-tested
+  locally, Zig/C on the server). Getting-started panel on `/` (per-language starter
+  code + curl/CLI + command reference). `/admin` ops page restored (`ColonyAdminLive`).
+  **Persistence** (`Colony.Persistence` + `Region` snapshot/restore + boot
+  `restore_all`): colonies, market, and each player's program bytes + bot memory
+  survive restarts/deploys, snapshotted every 50 ticks + on submit/reset/shutdown,
+  version-guarded. 37 tests, 0 failures.
 - **NOT yet done (future depth):** `upgrade` command + fabricator tech tier,
-  building-occupancy/pathing, colony snapshot persistence (regions are in-memory
-  now — a deploy restarts them), an admin/ops page, and typed in-file SDKs +
-  colony `tick` templates for the non-Rust languages (the language `Compile.template`s
-  are still the old v1 `decide` starters; only `examples/colony.rs` is a real colony bot).
+  building-occupancy/pathing, typed in-file SDKs (templates are hand-written ABI
+  glue today), and behavioral variety like a convoy-hunting raider bot.
 
 ## One-line
 

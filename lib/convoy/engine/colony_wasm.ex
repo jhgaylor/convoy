@@ -95,6 +95,52 @@ defmodule Convoy.Engine.ColonyWasm do
     _ -> {:ok, [], fuel_budget}
   end
 
+  # --- player memory (for persistence across restarts/deploys) ---
+  #
+  # A bot's persistent scratch state lives in its linear memory. The instance is
+  # a live process we can't serialize, so on snapshot we read a capped slice of
+  # its memory; on restore we re-instantiate from the program bytes and write the
+  # memory back. Capped hard, treated as opaque untrusted bytes.
+  @mem_cap 4 * 1024 * 1024
+
+  @doc "Read a module's linear memory (capped) for persistence, or nil if unavailable."
+  def snapshot_memory(%{pid: pid, store: store}) do
+    case Wasmex.memory(pid) do
+      {:ok, mem} ->
+        len = min(Wasmex.Memory.size(store, mem), @mem_cap)
+
+        case Wasmex.Memory.read_binary(store, mem, 0, len) do
+          bin when is_binary(bin) -> bin
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  def snapshot_memory(_), do: nil
+
+  @doc "Write previously-snapshotted bytes back into a fresh module's linear memory."
+  def restore_memory(%{pid: pid, store: store}, bin) when is_binary(bin) and byte_size(bin) > 0 do
+    case Wasmex.memory(pid) do
+      {:ok, mem} ->
+        if Wasmex.Memory.size(store, mem) >= byte_size(bin),
+          do: Wasmex.Memory.write_binary(store, mem, 0, bin)
+
+        :ok
+
+      _ ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  def restore_memory(_inst, _bin), do: :ok
+
   # --- helpers ---
 
   defp start_instance(store, module) do
