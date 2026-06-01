@@ -46,6 +46,9 @@ defmodule Convoy.PersistenceTest do
     Engine.ensure_region(id, persist: true)
     :ok = Engine.load_program(id, :wasm, Convoy.Bots.wat_harvester(), "harvester")
     Engine.set_speed(id, 20)
+    # Register as a spectator so the region ticks at full (hot) rate (§5);
+    # an unobserved region runs at the slow warm rate.
+    Engine.observe(id, self())
     Engine.play(id)
 
     # Let it run a few ticks, then force a snapshot by stopping the process.

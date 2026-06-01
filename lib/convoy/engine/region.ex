@@ -40,10 +40,28 @@ defmodule Convoy.Engine.Region do
   # (player Memory, primer §8). v3 = the Forge bases shape.
   @snapshot_version 4
 
+  # Scale-to-zero activation (primer §5). A running region with no spectators is
+  # **warm**: it still advances (it's a persistent world) but ticks much more
+  # slowly, so most of the map — idle at any moment — costs a fraction of the
+  # compute. A spectator connecting snaps it back to **hot** (full rate). Cold
+  # (process killed, state in the snapshot) is the existing admin Stop.
+  @warm_factor 8
+
   defmodule State do
     @moduledoc false
     # players: %{player_id => player()} where player is the map built by player/4.
-    defstruct [:id, :world, :players, :status, :tick_ms, :timer, :last_fuel, :persist]
+    # observers: MapSet of monitor refs for connected spectators (drives hot/warm).
+    defstruct [
+      :id,
+      :world,
+      :players,
+      :status,
+      :tick_ms,
+      :timer,
+      :last_fuel,
+      :persist,
+      :observers
+    ]
   end
 
   # --- client API ---
@@ -82,6 +100,13 @@ defmodule Convoy.Engine.Region do
 
   @doc "Remove a player from the region — stops their program, drops their harvesters and score."
   def kick_player(id, player_id), do: GenServer.call(via(id), {:kick, player_id})
+
+  @doc """
+  Register `pid` as a live spectator of this region (primer §5). The region
+  monitors it and ticks at full **hot** rate while at least one observer is
+  connected, dropping to the slow **warm** rate when the last one leaves.
+  """
+  def observe(id, pid), do: GenServer.cast(via(id), {:observe, pid})
 
   def play(id), do: GenServer.cast(via(id), :play)
   def pause(id), do: GenServer.cast(via(id), :pause)
@@ -161,6 +186,15 @@ defmodule Convoy.Engine.Region do
   end
 
   @impl true
+  def handle_cast({:observe, pid}, state) do
+    was_idle = MapSet.size(state.observers) == 0
+    ref = Process.monitor(pid)
+    state = %{state | observers: MapSet.put(state.observers, ref)}
+    # First spectator on a running region: snap warm -> hot (reschedule faster).
+    state = if was_idle, do: reschedule(state), else: state
+    {:noreply, state}
+  end
+
   def handle_cast(:play, %{status: :running} = state), do: {:noreply, state}
 
   def handle_cast(:play, state) do
@@ -213,6 +247,16 @@ defmodule Convoy.Engine.Region do
   end
 
   def handle_info(:tick, state), do: {:noreply, state}
+
+  # A spectator's LiveView process went away. Drop it; if it was the last one,
+  # the region falls back to the slow warm tick rate (primer §5).
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    observers = MapSet.delete(state.observers, ref)
+    became_idle = MapSet.size(observers) == 0 and MapSet.size(state.observers) > 0
+    state = %{state | observers: observers}
+    state = if became_idle, do: reschedule(state), else: state
+    {:noreply, state}
+  end
 
   # Trapping exits surfaces stray {:EXIT, _, _} from any links as messages;
   # ignore them (the parent's shutdown is handled by GenServer → terminate/2).
@@ -298,8 +342,25 @@ defmodule Convoy.Engine.Region do
   defp decide_for(_player, _e, _world, _budget), do: {:idle, 0}
 
   defp schedule_tick(state) do
-    %{state | timer: Process.send_after(self(), :tick, state.tick_ms)}
+    %{state | timer: Process.send_after(self(), :tick, tick_interval(state))}
   end
+
+  # Cancel and re-arm the timer at the current activation rate (used when a
+  # region crosses the hot/warm boundary as spectators come and go).
+  defp reschedule(%{status: :running} = state), do: state |> cancel_timer() |> schedule_tick()
+  defp reschedule(state), do: state
+
+  # Full rate when watched; @warm_factor slower when no one is (primer §5).
+  defp tick_interval(state) do
+    if MapSet.size(state.observers) == 0, do: state.tick_ms * @warm_factor, else: state.tick_ms
+  end
+
+  # Hot (watched) / warm (running, unwatched) / the raw status otherwise.
+  defp activation(%{status: :running} = state) do
+    if MapSet.size(state.observers) == 0, do: :warm, else: :hot
+  end
+
+  defp activation(state), do: state.status
 
   defp cancel_timer(%{timer: nil} = state), do: state
 
@@ -320,7 +381,8 @@ defmodule Convoy.Engine.Region do
       tick_ms: @default_tick_ms,
       timer: nil,
       last_fuel: 0,
-      persist: persist
+      persist: persist,
+      observers: MapSet.new()
     }
   end
 
@@ -440,6 +502,7 @@ defmodule Convoy.Engine.Region do
       id: state.id,
       world: state.world,
       status: state.status,
+      activation: activation(state),
       tick_ms: state.tick_ms,
       last_fuel: state.last_fuel,
       fuel_budget: World.base_fuel_budget(),
@@ -478,6 +541,7 @@ defmodule Convoy.Engine.Region do
     %{
       region_id: state.id,
       status: state.status,
+      activation: activation(state),
       tick: state.world.tick,
       tick_ms: state.tick_ms,
       last_fuel: state.last_fuel,

@@ -103,6 +103,7 @@ defmodule Convoy.Engine do
   @doc "A region's durable control-event history (primer §8), most-recent `n`."
   def history(id, n \\ 50), do: Convoy.EventLog.tail(id, n)
 
+  defdelegate observe(id, pid), to: Region
   defdelegate snapshot(id), to: Region
   defdelegate load_program(id, backend, exec, display), to: Region
   defdelegate submit_player(id, player_id, backend, exec, display), to: Region

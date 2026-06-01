@@ -109,6 +109,7 @@ the doc explains why; use AssemblyScript for a scripting feel).
 | **Seeded determinism / free replays** (§6, §11): same seed + same program → bit-identical result | `World.generate/1` (LCG), `:erlang.phash2` for `wander`; proven in tests |
 | **Region = single-writer process** (§4, §9) advancing autonomously | `Convoy.Engine.Region` GenServer; ticks on a timer, owns the WASM instance |
 | **Region registry / scale-to-zero** (§10): regions started on demand, located by id | `Registry` + `DynamicSupervisor` in `application.ex`; `Convoy.Engine.ensure_region/2` |
+| **Hot/warm activation** (§5): spend compute where something's happening | a running region with no spectators is **warm** — it still advances but ticks `@warm_factor`× slower; a connecting spectator (`Engine.observe/2`, called by `SimLive`) snaps it **hot** (full rate). **Cold** = the admin Stop (process killed, snapshot kept). `activation` shows in the header + stats |
 | **Snapshot persistence / freeze-thaw** (§8, §11): a region resumes at the tick it stopped across a restart/deploy | `Convoy.Persistence` (file-backed snapshots) + `Region` restore-on-init + `Engine.restore_all/0` on boot |
 | **Event log** (§8): the durable event stream beside the snapshots | `Convoy.EventLog` — append-only, framed control events (submit/kick/reset) per region with their tick; combined with the seed + deterministic loop this is the recovery + free-replay substrate (§6, §8). `Engine.history/2` reads it |
 | **Local dev loop**: edit a file, watch in the sim | `mix convoy.run` + `POST /api/region/:id/program` (or `/upload`) + named regions (`/?region=NAME`) |
@@ -242,9 +243,10 @@ persisted snapshot, so a shared game survives deploys.
   contested market are in (above), but the market currently lives *within* each
   region's world. Promoting it to a separate region the convoy migrates into,
   with a two-phase handoff between sim processes, is the remaining §4 piece.
-- Warm/cold fast-forward (§5) and the event-log half of persistence (§8). The
-  Forge's refining is deliberately rate-based so a warm region is
-  fast-forwardable; wiring up the fast-forward itself is still to do.
+- Analytical fast-forward of warm regions (§5): warm regions currently tick
+  slowly rather than computing a closed-form jump. The Forge's refining is
+  rate-based (closed-form) so the *production* side is fast-forwardable; the
+  black-box bot side is the open problem.
 - OS-level sandbox around both the WASM runner *and* the compile service (§7, §10).
 
 ## Tests

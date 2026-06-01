@@ -32,7 +32,12 @@ defmodule ConvoyWeb.SimLive do
     id = region_id(params)
     Engine.ensure_region(id, seed: 1, persist: true)
 
-    if connected?(socket), do: Phoenix.PubSub.subscribe(Convoy.PubSub, Engine.topic(id))
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(Convoy.PubSub, Engine.topic(id))
+      # Tell the region it has a live spectator so it ticks at full rate (§5);
+      # when this LiveView process dies the region falls back to the warm rate.
+      Engine.observe(id, self())
+    end
 
     {:ok,
      socket
@@ -155,6 +160,7 @@ defmodule ConvoyWeb.SimLive do
     socket
     |> assign(:world, snap.world)
     |> assign(:status, snap.status)
+    |> assign(:activation, Map.get(snap, :activation, snap.status))
     |> assign(:tick_ms, snap.tick_ms)
     |> assign(:fuel_budget, snap.fuel_budget)
     |> assign(:last_fuel, snap.last_fuel)
@@ -254,12 +260,16 @@ defmodule ConvoyWeb.SimLive do
           <.stat label="ore left" value={World.ore_remaining(@world)} accent="text-amber-400" />
           <.stat label="players" value={map_size(@scores)} accent="text-sky-400" />
           <.stat label="fuel/tick" value={@last_fuel} accent="text-fuchsia-400" />
-          <span class={[
-            "px-2 py-0.5 rounded text-xs font-mono uppercase",
-            @status == :running && "bg-emerald-500/20 text-emerald-300",
-            @status == :paused && "bg-slate-700 text-slate-300"
-          ]}>
-            {@status}
+          <span
+            class={[
+              "px-2 py-0.5 rounded text-xs font-mono uppercase",
+              @activation == :hot && "bg-emerald-500/20 text-emerald-300",
+              @activation == :warm && "bg-amber-500/20 text-amber-300",
+              @activation not in [:hot, :warm] && "bg-slate-700 text-slate-300"
+            ]}
+            title="hot = full rate · warm = slow (no spectators)"
+          >
+            {@activation}
           </span>
         </div>
       </header>
