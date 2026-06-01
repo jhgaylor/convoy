@@ -276,4 +276,177 @@ defmodule Convoy.EngineTest do
     final = solo(7) |> Sim.run(rules(), 600)
     assert World.credits(final, "p1") > 0
   end
+
+  # --- the defend PvP mechanic ---
+
+  # Two enemy convoys sharing a cell, with per-convoy stances supplied directly.
+  defp two_convoys_meeting do
+    World.generate(seed: 1)
+    |> World.add_player("p1")
+    |> World.add_player("p2")
+    |> grant_goods("p1", World.shipment_size())
+    |> grant_goods("p2", World.shipment_size())
+    |> World.launch_convoy("p1")
+    |> World.launch_convoy("p2")
+  end
+
+  # Move a specific convoy to a chosen cell (positions both ends of a collision).
+  defp place_convoy(world, id, {x, y}) do
+    entities =
+      Enum.map(world.entities, fn e ->
+        if e.id == id, do: %{e | x: x, y: y}, else: e
+      end)
+
+    %{world | entities: entities}
+  end
+
+  test "a defending convoy beats one that moves onto its cell, even with a higher id" do
+    world = two_convoys_meeting()
+    [c1, c2] = World.convoys(world)
+    assert c1.id < c2.id
+
+    # Park the HIGHER-id convoy (c2) one cell up the path, defending; put the
+    # LOWER-id one (c1) behind it and have it advance — its greedy step lands
+    # right on c2's cell. The defender should win despite the worse id.
+    world = world |> place_convoy(c2.id, {1, 0}) |> place_convoy(c1.id, {0, 0})
+    final = Sim.apply_intents(world, [], %{c2.id => :defend, c1.id => :advance})
+
+    assert [survivor] = World.convoys(final)
+    assert survivor.id == c2.id, "the defender should win regardless of id"
+    assert survivor.cargo == 2 * World.shipment_value()
+    assert survivor.last_action == :seize
+  end
+
+  test "with no defender, the lowest-id convoy still wins (unchanged rule)" do
+    world = two_convoys_meeting()
+    [c1, c2] = World.convoys(world)
+
+    final = Sim.apply_intents(world, [], %{c1.id => :advance, c2.id => :advance})
+
+    assert [survivor] = World.convoys(final)
+    assert survivor.id == c1.id
+    assert survivor.cargo == 2 * World.shipment_value()
+  end
+
+  test "defending forfeits forward progress (the convoy doesn't advance)" do
+    world = solo(1) |> grant_goods("p1", World.shipment_size()) |> World.launch_convoy("p1")
+    [c] = World.convoys(world)
+    start = {c.x, c.y}
+
+    final = Sim.apply_intents(world, [], %{c.id => :defend})
+    [held] = World.convoys(final)
+    assert {held.x, held.y} == start
+    assert held.last_action == :defend
+  end
+
+  test "the convoy PvP loop is deterministic with stances across independent runs" do
+    intents = fn world ->
+      Map.new(World.convoys(world), fn c -> {c.id, :defend} end)
+    end
+
+    run = fn ->
+      Enum.reduce(1..5, two_convoys_meeting(), fn _i, w ->
+        Sim.apply_intents(w, [], intents.(w))
+      end)
+    end
+
+    assert run.() == run.()
+  end
+
+  # --- tweakable game values (admin-tuned config) ---
+
+  test "a fresh world carries the factory config" do
+    assert World.config(World.generate(seed: 1)) == World.default_config()
+  end
+
+  test "put_config merges known knobs and drops unknown keys" do
+    world =
+      World.generate(seed: 1)
+      |> World.put_config(%{resource_amount: 99, harvesters: 7, bogus: 123})
+
+    cfg = World.config(world)
+    assert cfg.resource_amount == 99
+    assert cfg.harvesters == 7
+    # untouched knobs keep their defaults; the unknown key never lands.
+    assert cfg.shipment_size == World.default_config().shipment_size
+    refute Map.has_key?(cfg, :bogus)
+  end
+
+  test "config drives harvester count, cargo capacity, and resource layout" do
+    world =
+      World.generate(seed: 1)
+      |> World.put_config(%{harvesters: 5, cargo_max: 12, resource_nodes: 2, resource_amount: 7})
+      |> World.add_player("p1")
+
+    harvesters = Enum.filter(world.entities, &(&1.owner == "p1"))
+    assert length(harvesters) == 5
+    assert Enum.all?(harvesters, &(&1.cargo_max == 12))
+
+    res = World.resources(world, "p1")
+    assert map_size(res) == 2
+    assert Enum.all?(Map.values(res), &(&1 == 7))
+  end
+
+  test "config drives the Forge economy (refine rate, costs, fuel, shipment)" do
+    world =
+      World.generate(seed: 1)
+      |> World.put_config(%{
+        base_refine_rate: 4,
+        build_cost_refine: 3,
+        base_fuel_budget: 1000,
+        fuel_step: 500,
+        shipment_size: 8,
+        shipment_value: 50
+      })
+      |> World.add_player("p1")
+
+    # refine rate: 12 ore stockpiled, refine 4/tick.
+    refined = World.refine_all(World.deposit_ore(world, "p1", 12))
+    assert World.base(refined, "p1").goods == 4
+
+    # build cost reads the configured base cost (level 0 → ×1).
+    assert World.build_cost(world, "p1", :refine) == 3
+
+    # fuel budget at level 0 is the configured floor.
+    assert World.fuel_budget(world, "p1") == 1000
+
+    # shipment economics follow config.
+    assert World.shipment_size(world) == 8
+    launched = world |> grant_goods("p1", 8) |> World.launch_convoy("p1")
+    [c] = World.convoys(launched)
+    assert c.cargo == 50
+    assert World.base(launched, "p1").goods == 0
+  end
+
+  test "set_config is real-time: a mid-run refine-rate bump changes the next tick" do
+    base = solo(1) |> World.deposit_ore("p1", 100)
+    idle = fn _e, _w -> :idle end
+
+    # default refine rate (1/tick): one tick refines 1.
+    slow = Sim.tick(base, idle)
+    assert World.base(slow, "p1").goods == 1
+
+    # bump the rate live, then tick once more — the new rate applies immediately.
+    fast = base |> World.put_config(%{base_refine_rate: 25}) |> Sim.tick(idle)
+    assert World.base(fast, "p1").goods == 25
+  end
+
+  test "determinism holds with config: same seed + program + config is bit-identical" do
+    build = fn ->
+      World.generate(seed: 7)
+      |> World.put_config(%{resource_nodes: 3, resource_amount: 9, harvesters: 4})
+      |> World.add_player("p1")
+      |> Sim.run(rules(), 30)
+    end
+
+    assert build.() == build.()
+  end
+
+  test "reset keeps the operator's tuned config" do
+    tuned = World.generate(seed: 1, config: %{resource_amount: 77})
+    assert World.config(tuned).resource_amount == 77
+    # a regenerate that threads the config through keeps the tweak.
+    again = World.generate(seed: 2, region_id: "x", config: World.config(tuned))
+    assert World.config(again).resource_amount == 77
+  end
 end

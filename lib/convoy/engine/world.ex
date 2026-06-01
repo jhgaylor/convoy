@@ -6,9 +6,12 @@ defmodule Convoy.Engine.World do
   (`Convoy.Engine.Sim`) owns all mutation of it; player code only ever
   receives a read-only view and returns intents (primer §3).
 
-  Everything about a world is reproducible from `{seed}`: given the same
-  seed and the same player program, the tick loop produces bit-identical
-  results, which is the determinism / replay foundation (primer §6, §11).
+  Everything about a world is reproducible from `{seed, config}`: given the same
+  seed, the same balance `config` (the admin-tweakable knobs — see
+  `default_config/0`), and the same player program, the tick loop produces
+  bit-identical results, which is the determinism / replay foundation (primer
+  §6, §11). The config travels inside the world, so it persists with the snapshot
+  and a tuned region replays exactly.
   """
 
   alias Convoy.Engine.World
@@ -61,11 +64,45 @@ defmodule Convoy.Engine.World do
           tech: %{tech() => non_neg_integer()}
         }
 
+  # Tunable game-balance knobs, kept as **runtime world state** (not compile-time
+  # module attributes) so an operator can retune the economy live from the admin
+  # panel and the change takes effect on the very next tick. Because the config
+  # travels inside the world, it's part of every snapshot and is fed into the
+  # deterministic loop — replays stay bit-identical given the same seed, program,
+  # AND config (the determinism guarantee just gained a third input). Every value
+  # is a non-negative integer and the map is flat (each `build_cost_*` is its own
+  # key) so the admin form can render and validate each one trivially. See
+  # `default_config/0` for what each knob means.
+  @default_config %{
+    # world layout / resources
+    resource_nodes: 6,
+    resource_amount: 40,
+    replenish_threshold: 1,
+    # harvesters
+    harvesters: 3,
+    cargo_max: 5,
+    cargo_step: 5,
+    # the Forge: refining + tech ladder
+    base_refine_rate: 1,
+    base_fuel_budget: 50_000,
+    fuel_step: 25_000,
+    max_fuel_level: 4,
+    build_cost_refine: 10,
+    build_cost_cargo: 15,
+    build_cost_fuel: 25,
+    # convoys + the contested market
+    shipment_size: 20,
+    shipment_value: 30
+  }
+
   defstruct region_id: "alpha",
             seed: 1,
             width: 16,
             height: 12,
             tick: 0,
+            # Live, tweakable balance knobs (see `@default_config`). Read by the
+            # Sim + WASM view every tick, so an admin edit takes effect at once.
+            config: @default_config,
             # `base` is a room-LOCAL coordinate: the base cell within *every*
             # harvesting room (all rooms share dimensions; only their ore layout
             # differs). `market`/`market_entry` are coordinates in the shared
@@ -101,6 +138,7 @@ defmodule Convoy.Engine.World do
           width: pos_integer(),
           height: pos_integer(),
           tick: non_neg_integer(),
+          config: %{atom() => non_neg_integer()},
           base: pos(),
           market: pos(),
           market_entry: pos(),
@@ -115,40 +153,62 @@ defmodule Convoy.Engine.World do
           events: [String.t()]
         }
 
-  @resource_nodes 6
-  @resource_amount 40
-  @harvesters 3
-  @cargo_max 5
   @default_player "p1"
 
-  # --- convoys + the contested market (primer §1, §4) ---
-  #
-  # Goods can be loaded onto a convoy and run across the map to the market. A
-  # convoy is an auto-piloted entity; reaching the market sells its shipment for
-  # `credits`. The market is the only contested ground — when two players'
-  # convoys meet on a cell, the lower-id one seizes the other's shipment (PvP).
-  # Bases are never attacked; the stake of a fight is only the shipment (§1).
-  @shipment_size 20
-  # Successful delivery pays a premium over the goods spent — the reward for
-  # risking the contested run instead of hoarding at base.
-  @shipment_value 30
+  # The set of tech tiers, used to guard the build/cost functions.
+  @techs [:refine, :cargo, :fuel]
 
-  # --- the Forge: refining + tech ladder (primer §1) ---
-  #
-  # All balancing knobs live here so retuning the economy never touches a bot:
-  # the WASM ABI hands player code precomputed affordability flags, not costs.
-  @base_refine_rate 1
-  @cargo_step 5
-  @base_fuel_budget 50_000
-  @fuel_step 25_000
-  @max_fuel_level 4
-  # cost(level) = base * (level + 1): each tier costs more, so refine/cargo are
-  # self-limiting; fuel is also hard-capped at @max_fuel_level (never pay-to-win).
-  @build_cost %{refine: 10, cargo: 15, fuel: 25}
-  @max_level %{fuel: @max_fuel_level}
-  # Spawn a fresh deposit when the map drops to this many nodes (or fewer), so
-  # a region can never be mined to a dead end.
-  @replenish_threshold 1
+  # All game-balance knobs (ore per node, harvest/cargo size, shipment value,
+  # refine rate, build costs, fuel budget…) now live in the world's `config` map
+  # — runtime state an operator tweaks from the admin panel. The convoy + Forge
+  # balancing that used to live in module attributes here is all in
+  # `@default_config` above; retuning the economy still never touches a bot,
+  # because the WASM ABI hands player code precomputed affordability flags.
+
+  @doc """
+  The default (factory) balance config. Each key is a tweakable game value an
+  operator can override live (see `put_config/2`):
+
+    * `resource_nodes` — deposits generated per harvesting room
+    * `resource_amount` — ore a fresh/replenished deposit holds
+    * `replenish_threshold` — spawn a new deposit when a room drops to ≤ this many
+    * `harvesters` — harvesters a player gets on join
+    * `cargo_max` — base per-harvester cargo capacity (level 0)
+    * `cargo_step` — extra capacity per `cargo` tech level
+    * `base_refine_rate` — ore→goods refined per tick at refine level 0
+    * `base_fuel_budget` — per-tick WASM fuel budget at fuel level 0
+    * `fuel_step` — extra fuel budget per `fuel` tech level
+    * `max_fuel_level` — hard cap on the fuel tech level
+    * `build_cost_refine` / `build_cost_cargo` / `build_cost_fuel` — base goods
+      cost of the next level (cost = base × (level + 1))
+    * `shipment_size` — goods spent to launch a convoy
+    * `shipment_value` — credits a delivered shipment is worth
+  """
+  @spec default_config() :: %{atom() => non_neg_integer()}
+  def default_config, do: @default_config
+
+  @doc """
+  This world's live balance config (see `default_config/0`). Tolerant of a world
+  deserialized from a pre-config snapshot (returns the factory defaults), so the
+  admin page can still display a stopped region built from an older shape.
+  """
+  @spec config(t()) :: %{atom() => non_neg_integer()}
+  def config(%World{} = world), do: Map.get(world, :config) || @default_config
+
+  @doc """
+  Merge validated overrides into the world's config, keeping only known keys.
+  Unknown keys are dropped so a stray form field can't pollute the config. The
+  Sim and WASM view read the config every tick, so the new values are authoritative
+  on the next tick (real-time retuning) — and travel with the snapshot for replay.
+  """
+  @spec put_config(t(), %{atom() => non_neg_integer()}) :: t()
+  def put_config(%World{config: c} = world, overrides) when is_map(overrides) do
+    %{world | config: Map.merge(c, Map.take(overrides, Map.keys(@default_config)))}
+  end
+
+  # Read one knob from the world's config, falling back to the factory default so
+  # a snapshot written before a knob existed still works.
+  defp cfg(%World{config: c}, key), do: Map.get(c, key, Map.fetch!(@default_config, key))
 
   @doc """
   Build a fresh world deterministically from a seed.
@@ -164,6 +224,14 @@ defmodule Convoy.Engine.World do
     height = Keyword.get(opts, :height, 12)
     base = {0, 0}
     neighbor = Keyword.get(opts, :neighbor)
+    # Carry over a tuned config (e.g. on `reset`, an operator keeps their tweaks)
+    # or start from the factory defaults. Unknown keys are dropped.
+    config =
+      Map.merge(
+        @default_config,
+        Map.take(Keyword.get(opts, :config, %{}), Map.keys(@default_config))
+      )
+
     # The market sits at the opposite corner from the market-room entry — the far
     # end of the contested run. Deterministic, so replays/layouts stay reproducible.
     market = {width - 1, height - 1}
@@ -178,6 +246,7 @@ defmodule Convoy.Engine.World do
       width: width,
       height: height,
       tick: 0,
+      config: config,
       base: base,
       market: market,
       market_entry: {0, 0},
@@ -194,18 +263,23 @@ defmodule Convoy.Engine.World do
   @spec default_player() :: player_id()
   def default_player, do: @default_player
 
-  @doc "How many harvesters a player gets when they join."
+  @doc "How many harvesters a player gets when they join (factory default)."
   @spec harvesters_per_player() :: pos_integer()
-  def harvesters_per_player, do: @harvesters
+  def harvesters_per_player, do: @default_config.harvesters
+
+  @doc "How many harvesters a player gets when they join this world (live config)."
+  @spec harvesters_per_player(t()) :: pos_integer()
+  def harvesters_per_player(%World{} = world), do: cfg(world, :harvesters)
 
   @doc """
   Add a player to the world: carve out their **private harvesting room**
   (deterministic deposits from `{seed, player_id}`), spawn their harvesters at
   the base cell inside it, and start their score at 0. Idempotent — re-adding an
   existing player is a no-op (so a player resubmitting code keeps their room).
+  `count` defaults to the world's live `harvesters` config knob.
   """
-  @spec add_player(t(), player_id(), pos_integer()) :: t()
-  def add_player(world, player_id, count \\ @harvesters)
+  @spec add_player(t(), player_id(), pos_integer() | nil) :: t()
+  def add_player(world, player_id, count \\ nil)
 
   def add_player(%World{bases: bases} = world, player_id, _count)
       when is_map_key(bases, player_id),
@@ -213,6 +287,8 @@ defmodule Convoy.Engine.World do
 
   def add_player(%World{} = world, player_id, count) do
     {bx, by} = world.base
+    count = count || cfg(world, :harvesters)
+    cargo_max = cfg(world, :cargo_max)
 
     {new_entities, next_id} =
       Enum.map_reduce(1..count, world.next_entity_id, fn _i, id ->
@@ -224,7 +300,7 @@ defmodule Convoy.Engine.World do
           x: bx,
           y: by,
           cargo: 0,
-          cargo_max: @cargo_max,
+          cargo_max: cargo_max,
           last_action: :idle
         }
 
@@ -233,9 +309,17 @@ defmodule Convoy.Engine.World do
 
     # Each player's deposits derive from a per-player seed, so every room is
     # reproducible (replay, primer §6) and distinct (no two players get the
-    # same map — but also can never touch each other's ore).
+    # same map — but also can never touch each other's ore). Node count + ore
+    # amount come from the live config so the layout reflects current tuning.
     {resources, _rng} =
-      place_resources(room_seed(world.seed, player_id), world.width, world.height, world.base)
+      place_resources(
+        room_seed(world.seed, player_id),
+        world.width,
+        world.height,
+        world.base,
+        cfg(world, :resource_nodes),
+        cfg(world, :resource_amount)
+      )
 
     %{
       world
@@ -324,35 +408,39 @@ defmodule Convoy.Engine.World do
   """
   @spec refine_all(t()) :: t()
   def refine_all(%World{bases: bases} = world) do
-    %{world | bases: Map.new(bases, fn {p, b} -> {p, refine_one(b)} end)}
+    rate0 = cfg(world, :base_refine_rate)
+    %{world | bases: Map.new(bases, fn {p, b} -> {p, refine_one(b, rate0)} end)}
   end
 
-  defp refine_one(b) do
-    n = min(b.ore, refine_rate(b))
+  defp refine_one(b, rate0) do
+    n = min(b.ore, rate0 + tech_level(b, :refine))
     %{b | ore: b.ore - n, goods: b.goods + n, refined_total: b.refined_total + n}
   end
 
-  defp refine_rate(b), do: @base_refine_rate + tech_level(b, :refine)
-
   @doc "The goods cost of a player's NEXT level in `tech`."
   @spec build_cost(t(), player_id(), tech()) :: pos_integer()
-  def build_cost(%World{} = world, player_id, tech) when is_map_key(@build_cost, tech) do
+  def build_cost(%World{} = world, player_id, tech) when tech in @techs do
     level = tech_level(base(world, player_id), tech)
-    @build_cost[tech] * (level + 1)
+    base_build_cost(world, tech) * (level + 1)
   end
+
+  # The base (level-0) goods cost of a tech, from the live config.
+  defp base_build_cost(world, :refine), do: cfg(world, :build_cost_refine)
+  defp base_build_cost(world, :cargo), do: cfg(world, :build_cost_cargo)
+  defp base_build_cost(world, :fuel), do: cfg(world, :build_cost_fuel)
 
   @doc """
   Can `player_id` afford and is allowed to build the next level of `tech`?
-  False if they lack the goods or the tech is capped (see `@max_level`). This
+  False if they lack the goods or the tech is capped (`max_fuel_level`). This
   is precomputed and handed to player code as a flag, so bots never need to
   know the cost formula.
   """
   @spec can_build?(t(), player_id() | nil, tech()) :: boolean()
-  def can_build?(%World{} = world, player_id, tech) when is_map_key(@build_cost, tech) do
+  def can_build?(%World{} = world, player_id, tech) when tech in @techs do
     b = base(world, player_id)
     level = tech_level(b, tech)
-    capped? = match?(%{^tech => max} when level >= max, @max_level)
-    not capped? and b.goods >= @build_cost[tech] * (level + 1)
+    capped? = tech == :fuel and level >= cfg(world, :max_fuel_level)
+    not capped? and b.goods >= base_build_cost(world, tech) * (level + 1)
   end
 
   def can_build?(_world, _player, _tech), do: false
@@ -364,7 +452,7 @@ defmodule Convoy.Engine.World do
   sim validates before calling, so this is a pure state transition.
   """
   @spec build(t(), player_id(), tech()) :: t()
-  def build(%World{} = world, player_id, tech) when is_map_key(@build_cost, tech) do
+  def build(%World{} = world, player_id, tech) when tech in @techs do
     cost = build_cost(world, player_id, tech)
 
     world
@@ -377,7 +465,7 @@ defmodule Convoy.Engine.World do
   # cargo upgrades change the world (every owned harvester's capacity); refine
   # and fuel are read live from the base each tick, so nothing else to apply.
   defp apply_tech(world, player_id, :cargo) do
-    cap = cargo_max_for(base(world, player_id))
+    cap = cargo_max_for(world, base(world, player_id))
 
     entities =
       Enum.map(world.entities, fn e ->
@@ -390,8 +478,9 @@ defmodule Convoy.Engine.World do
   defp apply_tech(world, _player_id, _tech), do: world
 
   @doc "A player's per-harvester cargo capacity given their cargo tech level."
-  @spec cargo_max_for(base()) :: pos_integer()
-  def cargo_max_for(b), do: @cargo_max + tech_level(b, :cargo) * @cargo_step
+  @spec cargo_max_for(t(), base()) :: pos_integer()
+  def cargo_max_for(%World{} = world, b),
+    do: cfg(world, :cargo_max) + tech_level(b, :cargo) * cfg(world, :cargo_step)
 
   @doc """
   A player's per-tick fuel budget (primer §7: compute as a tech reward, capped).
@@ -399,11 +488,17 @@ defmodule Convoy.Engine.World do
   """
   @spec fuel_budget(t(), player_id() | nil) :: pos_integer()
   def fuel_budget(%World{} = world, player_id),
-    do: @base_fuel_budget + tech_level(base(world, player_id), :fuel) * @fuel_step
+    do:
+      cfg(world, :base_fuel_budget) +
+        tech_level(base(world, player_id), :fuel) * cfg(world, :fuel_step)
 
-  @doc "The floor (level-0) fuel budget, for display."
+  @doc "The floor (level-0) fuel budget (factory default), for display."
   @spec base_fuel_budget() :: pos_integer()
-  def base_fuel_budget, do: @base_fuel_budget
+  def base_fuel_budget, do: @default_config.base_fuel_budget
+
+  @doc "This world's floor (level-0) fuel budget, for display."
+  @spec base_fuel_budget(t()) :: pos_integer()
+  def base_fuel_budget(%World{} = world), do: cfg(world, :base_fuel_budget)
 
   @doc "A base's level in `tech` (0 if absent)."
   @spec tech_level(base(), tech()) :: non_neg_integer()
@@ -419,22 +514,31 @@ defmodule Convoy.Engine.World do
   @spec market(t()) :: pos()
   def market(%World{market: m}), do: m
 
-  @doc "Goods cost to launch a convoy."
+  @doc "Goods cost to launch a convoy (factory default)."
   @spec shipment_size() :: pos_integer()
-  def shipment_size, do: @shipment_size
+  def shipment_size, do: @default_config.shipment_size
 
-  @doc "Credits a delivered shipment is worth (a premium over the goods spent)."
+  @doc "Goods cost to launch a convoy in this world (live config)."
+  @spec shipment_size(t()) :: pos_integer()
+  def shipment_size(%World{} = world), do: cfg(world, :shipment_size)
+
+  @doc "Credits a delivered shipment is worth (factory default)."
   @spec shipment_value() :: pos_integer()
-  def shipment_value, do: @shipment_value
+  def shipment_value, do: @default_config.shipment_value
+
+  @doc "Credits a delivered shipment is worth in this world (live config)."
+  @spec shipment_value(t()) :: pos_integer()
+  def shipment_value(%World{} = world), do: cfg(world, :shipment_value)
 
   @doc "Can a player afford to load a convoy (enough goods for one shipment)?"
   @spec can_launch?(t(), player_id() | nil) :: boolean()
-  def can_launch?(%World{} = world, player_id), do: base(world, player_id).goods >= @shipment_size
+  def can_launch?(%World{} = world, player_id),
+    do: base(world, player_id).goods >= cfg(world, :shipment_size)
 
   @doc """
-  Launch a convoy for a player: spend `@shipment_size` goods and spawn an
-  auto-piloted convoy entity at base carrying a shipment worth `@shipment_value`
-  credits. Assumes affordability was checked (`can_launch?/2`).
+  Launch a convoy for a player: spend the `shipment_size` goods and spawn an
+  auto-piloted convoy entity at base carrying a shipment worth `shipment_value`
+  credits (both live config). Assumes affordability was checked (`can_launch?/2`).
   """
   @spec launch_convoy(t(), player_id()) :: t()
   def launch_convoy(%World{} = world, player_id) do
@@ -442,6 +546,7 @@ defmodule Convoy.Engine.World do
     # its entry — the contested run happens on common ground, never inside a
     # player's private room.
     {ex, ey} = world.market_entry
+    value = cfg(world, :shipment_value)
 
     convoy = %{
       id: world.next_entity_id,
@@ -450,8 +555,8 @@ defmodule Convoy.Engine.World do
       room: :market,
       x: ex,
       y: ey,
-      cargo: @shipment_value,
-      cargo_max: @shipment_value,
+      cargo: value,
+      cargo_max: value,
       # The region to credit when this shipment finally sells — its home, even
       # if it crosses a border into a market region (primer §4).
       origin_region: world.region_id,
@@ -459,7 +564,7 @@ defmodule Convoy.Engine.World do
     }
 
     world
-    |> update_base(player_id, fn b -> %{b | goods: b.goods - @shipment_size} end)
+    |> update_base(player_id, fn b -> %{b | goods: b.goods - cfg(world, :shipment_size)} end)
     |> Map.update!(:entities, &(&1 ++ [convoy]))
     |> Map.update!(:next_entity_id, &(&1 + 1))
   end
@@ -487,6 +592,20 @@ defmodule Convoy.Engine.World do
   @doc "All convoy entities, sorted by id (deterministic)."
   @spec convoys(t()) :: [entity()]
   def convoys(%World{entities: es}), do: es |> Enum.filter(&convoy?/1) |> Enum.sort_by(& &1.id)
+
+  @doc """
+  The nearest convoy in the market room owned by someone *other* than `convoy`'s
+  owner, by Manhattan distance (id-order tie-break — `convoys/1` is id-sorted, so
+  `min_by` is deterministic). `nil` if there are no enemy convoys. This is what a
+  bot's convoy controller uses to hunt or ambush rivals.
+  """
+  @spec nearest_enemy_convoy(t(), entity()) :: entity() | nil
+  def nearest_enemy_convoy(%World{} = world, %{owner: owner, x: cx, y: cy}) do
+    world
+    |> convoys()
+    |> Enum.reject(&(&1.owner == owner))
+    |> Enum.min_by(fn e -> abs(e.x - cx) + abs(e.y - cy) end, fn -> nil end)
+  end
 
   @doc "Remove an entity by id (a convoy that sold, crossed a border, or was seized)."
   @spec remove_entity(t(), pos_integer()) :: t()
@@ -536,9 +655,13 @@ defmodule Convoy.Engine.World do
   def take_outbox(%World{departing: d, pending_credits: c} = world),
     do: {d, c, %{world | departing: [], pending_credits: []}}
 
-  @doc "The ore amount a freshly-spawned (or generated) deposit holds."
+  @doc "The ore amount a freshly-spawned (or generated) deposit holds (factory default)."
   @spec resource_amount() :: pos_integer()
-  def resource_amount, do: @resource_amount
+  def resource_amount, do: @default_config.resource_amount
+
+  @doc "The ore a freshly-spawned deposit holds in this world (live config)."
+  @spec resource_amount(t()) :: pos_integer()
+  def resource_amount(%World{} = world), do: cfg(world, :resource_amount)
 
   @doc "Ids of the players whose private harvesting rooms exist."
   @spec room_ids(t()) :: [player_id()]
@@ -574,12 +697,12 @@ defmodule Convoy.Engine.World do
   """
   @spec maybe_spawn_resource(t(), room()) :: {t(), pos() | nil}
   def maybe_spawn_resource(%World{rooms: rooms} = world, room) when is_map_key(rooms, room) do
-    if map_size(resources(world, room)) <= @replenish_threshold do
+    if map_size(resources(world, room)) <= cfg(world, :replenish_threshold) do
       pos = spawn_cell(world, room)
 
       world =
         world
-        |> put_resources(room, Map.put(resources(world, room), pos, @resource_amount))
+        |> put_resources(room, Map.put(resources(world, room), pos, cfg(world, :resource_amount)))
         |> Map.update!(:replenished, &(&1 + 1))
 
       {world, pos}
@@ -701,11 +824,11 @@ defmodule Convoy.Engine.World do
 
   # --- deterministic generation helpers ---
 
-  defp place_resources(seed, width, height, base) do
+  defp place_resources(seed, width, height, base, nodes, amount) do
     # Linear congruential generator — fully deterministic from seed.
-    Enum.reduce(1..@resource_nodes, {%{}, seed_state(seed)}, fn _i, {acc, rng} ->
+    Enum.reduce(1..nodes, {%{}, seed_state(seed)}, fn _i, {acc, rng} ->
       {pos, rng} = pick_free_cell(acc, base, width, height, rng)
-      {Map.put(acc, pos, @resource_amount), rng}
+      {Map.put(acc, pos, amount), rng}
     end)
   end
 

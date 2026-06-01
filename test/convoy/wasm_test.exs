@@ -191,6 +191,58 @@ defmodule Convoy.WasmTest do
     Wasm.stop(inst)
   end
 
+  # --- convoy controller (optional `convoy` export, PvP) ---
+
+  @convoy_abi "(param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)"
+
+  defp convoy(owner, {x, y}, id),
+    do: %{
+      id: id,
+      owner: owner,
+      kind: :convoy,
+      room: :market,
+      x: x,
+      y: y,
+      cargo: 30,
+      cargo_max: 30,
+      last_action: :advance
+    }
+
+  # A module exports both the required `decide` (harvester) and an optional
+  # `convoy` controller. `decide` is a no-op stub here; `convoy` returns `code`.
+  defp convoy_module(code),
+    do:
+      "(module " <>
+        "(func (export \"decide\") #{@abi} (i32.const 0)) " <>
+        "(func (export \"convoy\") #{@convoy_abi} (i32.const #{code})))"
+
+  test "a module exporting `convoy` steers its convoys (code 1 → defend)" do
+    {:ok, inst} = Wasm.instantiate(convoy_module(1))
+
+    world = World.generate(seed: 1) |> World.add_player("p1")
+    assert {:ok, :defend, used} = Wasm.convoy_decide(inst, convoy("p1", {0, 0}, 1), world, 50_000)
+    assert used > 0
+    Wasm.stop(inst)
+  end
+
+  test "convoy code 2 hunts: steps toward the nearest enemy convoy" do
+    {:ok, inst} = Wasm.instantiate(convoy_module(2))
+
+    c = convoy("p1", {0, 0}, 1)
+    enemy = convoy("p2", {3, 0}, 2)
+    world = %{World.generate(seed: 1) | entities: [c, enemy]}
+
+    assert {:ok, {:move, {1, 0}}, _} = Wasm.convoy_decide(inst, c, world, 50_000)
+    Wasm.stop(inst)
+  end
+
+  test "a module without a `convoy` export leaves convoys on auto-pilot (advance, no fuel)" do
+    {:ok, inst} = Wasm.instantiate(Wasm.default_source())
+    world = World.generate(seed: 1) |> World.add_player("p1")
+    assert {:ok, :advance, 0} = Wasm.convoy_decide(inst, convoy("p1", {0, 0}, 1), world, 50_000)
+    Wasm.stop(inst)
+  end
+
   # --- player Memory (primer §8) ---
 
   # A module that bumps a counter at mem[0] every call and exports its memory.

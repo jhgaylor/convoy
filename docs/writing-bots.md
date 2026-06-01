@@ -98,11 +98,46 @@ reward for making the run). You don't steer it; the strategy is **when** to ship
 versus hoard or upgrade.
 
 The market is the **only contested ground** (primer §1). When two players'
-convoys land on the same cell, the lower-id one **seizes** the other's
-shipment — a deterministic ambush. Bases are never attacked; the stake of a
-fight is only the shipment in transit, never your progress. So the tension is
-timing: ship early and often, or build throughput first and run bigger, riskier
-convoys later.
+convoys land on the same cell, one **seizes** the others' shipments — a
+deterministic ambush. Bases are never attacked; the stake of a fight is only the
+shipment in transit, never your progress. So the tension is timing: ship early
+and often, or build throughput first and run bigger, riskier convoys later.
+
+### Steering your convoys: the optional `convoy` export
+
+By default convoys auto-pilot straight to the market, and your only choice is
+*when* to launch. Export a second function, `convoy`, to control each of your
+convoys every tick and play the market tactically:
+
+```
+convoy(cargo, market_dx, market_dy, dist_market, tick,
+       enemy_dx, enemy_dy, enemy_dist, enemy_adjacent) -> code
+```
+
+| param | meaning |
+|-------|---------|
+| `cargo` | credits this convoy is carrying |
+| `market_dx`, `market_dy` | direction (−1/0/1) toward the market |
+| `dist_market` | Manhattan distance to the market |
+| `enemy_dx`, `enemy_dy` | direction toward the nearest enemy convoy (0/0 if none) |
+| `enemy_dist` | distance to the nearest enemy convoy (−1 if none) |
+| `enemy_adjacent` | 1 if an enemy convoy is within one cell |
+
+| code | stance |
+|------|--------|
+| `1` | **defend** — hold this cell; you win any collision a mover causes here |
+| `2` | **hunt** — step toward the nearest enemy convoy (advance if none) |
+| `10`–`13` | steer +x / −x / +y / −y |
+| anything else (incl. `0`) | advance toward the market (the default) |
+
+**The defend rule:** a convoy that *defended* beats any convoy that moved onto
+its cell, regardless of id. With no defender on a contested cell, the lowest id
+wins (as before). Defending means you don't advance — you trade your own
+delivery for the chance to rob someone. The export is optional: a bot without it
+leaves convoys on auto-pilot, fully compatible with the harvester-only ABI.
+
+See [`examples/raider.rs`](../examples/raider.rs) for an aggressive bot that
+hunts and ambushes rivals' convoys instead of cashing in its own.
 
 ## Persistent memory
 

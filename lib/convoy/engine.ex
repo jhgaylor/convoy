@@ -70,6 +70,7 @@ defmodule Convoy.Engine do
           entities: length(world.entities),
           ore_remaining: World.ore_remaining(world),
           delivered: World.total_refined(world),
+          config: World.config(world),
           persist: true,
           wasm_instances: 0,
           memory: 0,
@@ -114,5 +115,6 @@ defmodule Convoy.Engine do
   defdelegate step(id), to: Region
   defdelegate reset(id, seed), to: Region
   defdelegate set_speed(id, tick_ms), to: Region
+  defdelegate set_config(id, overrides), to: Region
   defdelegate topic(id), to: Region
 end

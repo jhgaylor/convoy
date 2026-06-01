@@ -26,8 +26,12 @@ with live system + per-sim utilization (BEAM scheduler %, VM memory, process
 count; per-sim tick, players, harvesters, ore, fuel/tick, memory,
 reductions/sec), and stopped-but-persisted ones (built from their snapshot).
 Controls: **Stop** (free compute; snapshot kept), **Resume** (restart a stopped
-one), **Delete** (remove its snapshot). Put it behind auth before exposing it
-publicly.
+one), **Delete** (remove its snapshot). Expand a region (▸) to **tune its game
+values live** — ore per node, harvest/cargo size, refine rate, build costs,
+fuel budget, shipment size/value, etc. — and kick players. Edits apply on the
+next tick, persist with the snapshot, and travel into the deterministic loop
+(replays stay bit-identical given the same seed + program + config). Put it
+behind auth before exposing it publicly.
 
 ## Local dev workflow (write code in your editor, watch it in the sim)
 
@@ -122,7 +126,7 @@ the doc explains why; use AssemblyScript for a scripting feel).
 | **Route a session to its region** (§9) | `ConvoyWeb.SimLive` (spectator) subscribes over PubSub; submits go through `Convoy.Loader` → `Engine.submit_player/5` |
 | **The Forge** (§1): refine harvested ore, climb a rate-based tech ladder | each player has a `base` (`World.bases`): `unload` stocks raw ore, `Sim` refines it to goods each tick (`World.refine_all/1`), and `build` intents (codes 20/21/22) spend goods on **refine / cargo / fuel** tech |
 | **Player Memory** (§8): persistent scratch state between ticks | the wasm instance is reused across ticks, so a bot's linear memory persists live; `Wasm.snapshot_memory/1` + `restore_memory/2` serialize a capped page with the region so it survives freeze/thaw (bit-identical replay) |
-| **Convoys + the contested market** (§1): ship goods across contested ground for credits; PvP | `build`-style intent (code 30) loads a convoy (`World.launch_convoy/2`); the `Sim` auto-pilots it to the market and sells it for `credits`; when enemy convoys share a cell the lower-id one seizes the shipment (`Sim.resolve_market/1`). Bases are never attacked — the stake is only the shipment (§1) |
+| **Convoys + the contested market** (§1): ship goods across contested ground for credits; PvP | `build`-style intent (code 30) loads a convoy (`World.launch_convoy/2`); convoys advance to the market and sell for `credits`. Collisions: a convoy that **defended** its cell beats any that moved in; otherwise the lowest-id one seizes the shipment (`Sim.resolve_market/1`). Bots steer convoys via the optional `convoy` WASM export (defend / hunt / advance); without it convoys auto-pilot. Bases are never attacked — the stake is only the shipment (§1). See `examples/raider.rs` |
 | **Cross-region border handoff** (§4): a convoy migrates between region processes | opt-in via `ensure_region(id, neighbor: "market")`. A convoy reaching a bordered region's edge is removed and cast to the neighbor (`Region.receive_convoy/2`); selling there casts a credit-back to the origin region (`Region.credit/3`). Two-phase, async (no Region→Region calls → no deadlock). The default (neighbor-less) region keeps the fully-deterministic in-world market, preserving bit-identical replay |
 
 ## Persistence (surviving deploys)
@@ -244,9 +248,11 @@ through to sell. Each entity carries a `room` tag (`owner_id` for harvesters,
 at the same `{x, y}`.
 
 The upshot: harvesting is solitaire (no ore contention), and the **only**
-contested ground is the market road, where convoys from different players can
-collide and the lower-id one seizes the shipment (resolved in entity-id order,
-single-writer — fair and deterministic). The tick loop runs each harvester's
+contested ground is the market road, where convoys from different players
+collide. A convoy that **defends** its cell beats any that moves onto it;
+otherwise the lowest-id one seizes the shipment (resolved in entity-id order,
+single-writer — fair and deterministic). Bots can steer their convoys (defend /
+hunt / advance) via the optional `convoy` WASM export. The tick loop runs each harvester's
 *owner's* program against a read-only view of that player's own room. Scoring is
 per-player (`World.scoreboard`). The browser only spectates until you submit;
 you join as a named player via the page's upload, `mix convoy.run --player

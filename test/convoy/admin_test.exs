@@ -74,4 +74,43 @@ defmodule Convoy.AdminTest do
     refute id in Engine.list_regions()
     assert :error = Convoy.Persistence.load(id)
   end
+
+  test "set_config retunes a live region; the new values surface in stats" do
+    id = "ov-#{System.unique_integer([:positive])}"
+    Engine.ensure_region(id)
+
+    # The admin form posts string values (number inputs) and an unknown field;
+    # the region coerces ints, drops junk, and merges the known knobs.
+    assert {:ok, cfg} =
+             Engine.set_config(id, %{
+               "resource_amount" => "88",
+               "shipment_value" => "120",
+               "bogus" => "9"
+             })
+
+    assert cfg.resource_amount == 88
+    assert cfg.shipment_value == 120
+    refute Map.has_key?(cfg, :bogus)
+    # the rest stay at their defaults.
+    assert cfg.harvesters == Convoy.Engine.World.default_config().harvesters
+
+    # the change is visible to the overview page immediately.
+    assert Engine.region_stats(id).config.resource_amount == 88
+
+    Engine.stop_region(id)
+  end
+
+  test "set_config survives a stop/resume (persisted with the snapshot)" do
+    id = "ov-#{System.unique_integer([:positive])}"
+    Engine.ensure_region(id, persist: true)
+    Engine.set_config(id, %{"resource_amount" => "55"})
+
+    Engine.stop_region(id)
+    Process.sleep(20)
+
+    Engine.ensure_region(id, persist: true)
+    assert Engine.region_stats(id).config.resource_amount == 55
+
+    Engine.delete_region(id)
+  end
 end

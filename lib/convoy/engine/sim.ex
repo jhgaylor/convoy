@@ -64,15 +64,17 @@ defmodule Convoy.Engine.Sim do
   against the *accumulating* world so single-writer semantics hold (two
   harvesters can't both take the last ore), then advance the tick.
   """
-  @spec apply_intents(World.t(), [{pos_integer(), term()}]) :: World.t()
-  def apply_intents(%World{} = world, intents) do
+  @spec apply_intents(World.t(), [{pos_integer(), term()}], %{pos_integer() => term()}) ::
+          World.t()
+  def apply_intents(%World{} = world, intents, convoy_intents \\ %{}) do
     world = Enum.reduce(intents, world, fn {id, intent}, acc -> resolve(acc, id, intent) end)
 
     world
-    # Convoys (primer §1, §4): auto-pilot every convoy one step toward the
-    # market, then resolve the contested market — PvP capture on shared cells,
-    # then delivery. All deterministic (id-order / commutative per cell).
-    |> move_convoys()
+    # Convoys (primer §1, §4): move every convoy per its owner's stance
+    # (advance toward market by default; a bot may defend or steer), then
+    # resolve the contested market — PvP capture on shared cells, then
+    # delivery. All deterministic (id-order / commutative per cell).
+    |> move_convoys(convoy_intents)
     |> resolve_market()
     # The Forge: every base refines stockpiled ore into goods at its tech rate.
     # Rate-based and deterministic, so warm regions stay fast-forwardable (§5).
@@ -94,7 +96,7 @@ defmodule Convoy.Engine.Sim do
         {acc, pos} ->
           note(
             acc,
-            "A new ore deposit (#{World.resource_amount()}) appeared in #{room}'s room at #{fmt(pos)}."
+            "A new ore deposit (#{World.resource_amount(acc)}) appeared in #{room}'s room at #{fmt(pos)}."
           )
       end
     end)
@@ -190,7 +192,9 @@ defmodule Convoy.Engine.Sim do
       world
       |> World.launch_convoy(e.owner)
       |> update_entity(id, &%{&1 | last_action: :launch})
-      |> note("#{e.owner} loaded a convoy — #{World.shipment_size()} goods bound for market.")
+      |> note(
+        "#{e.owner} loaded a convoy — #{World.shipment_size(world)} goods bound for market."
+      )
     else
       update_entity(world, id, &%{&1 | last_action: :idle})
     end
@@ -202,22 +206,41 @@ defmodule Convoy.Engine.Sim do
 
   # --- convoys + contested market (primer §1, §4) ---
 
-  # Auto-pilot every convoy one cell toward the market. Convoys aren't player-
-  # controlled; the run itself is automatic, the strategy is when to launch.
-  defp move_convoys(world) do
+  # Move every convoy one cell per its owner's stance for this tick. A convoy's
+  # intent comes from the optional `convoy` WASM export (collected by the Region,
+  # keyed by entity id); a bot that doesn't control convoys leaves the map empty,
+  # so they all default to `:advance` — the original auto-pilot behaviour.
+  #
+  #   :advance        → step toward the market (default)
+  #   :defend         → hold position; wins any collision on its cell this tick
+  #   {:move, {dx,dy}} → steer one cell (clamped to the grid) — e.g. to hunt
+  #
+  # `last_action` carries the stance into `resolve_market`, which is how the
+  # capture step knows who defended.
+  defp move_convoys(world, convoy_intents) do
     market = World.market(world)
 
     entities =
       Enum.map(world.entities, fn e ->
         if World.convoy?(e) do
-          {dx, dy} = World.step_toward({e.x, e.y}, market)
-          %{e | x: e.x + dx, y: e.y + dy, last_action: :move}
+          move_convoy(e, market, Map.get(convoy_intents, e.id, :advance), world)
         else
           e
         end
       end)
 
     %{world | entities: entities}
+  end
+
+  defp move_convoy(e, _market, :defend, _world), do: %{e | last_action: :defend}
+
+  defp move_convoy(e, _market, {:move, {dx, dy}}, world) do
+    %{e | x: clamp(e.x + dx, world.width), y: clamp(e.y + dy, world.height), last_action: :move}
+  end
+
+  defp move_convoy(e, market, _advance, _world) do
+    {dx, dy} = World.step_toward({e.x, e.y}, market)
+    %{e | x: e.x + dx, y: e.y + dy, last_action: :advance}
   end
 
   # The contested moment (primer §1, §4): capture first (an ambush takes the
@@ -227,10 +250,10 @@ defmodule Convoy.Engine.Sim do
     world |> capture_convoys() |> sell_convoys()
   end
 
-  # On any cell holding convoys of two or more owners, the lowest-id convoy
-  # seizes the others' shipments and they're destroyed. Per-cell captures are
-  # independent (disjoint entities), so the result is order-independent and
-  # bit-identical regardless of map iteration order.
+  # On any cell holding convoys of two or more owners, one convoy seizes the
+  # others' shipments and they're destroyed. Per-cell captures are independent
+  # (disjoint entities), so the result is order-independent and bit-identical
+  # regardless of map iteration order.
   defp capture_convoys(world) do
     world
     |> World.convoys()
@@ -238,19 +261,29 @@ defmodule Convoy.Engine.Sim do
     |> Enum.reduce(world, fn {cell, group}, acc -> capture_cell(acc, cell, group) end)
   end
 
+  # Who wins a contested cell: a convoy that **defended** beats any that moved
+  # in (it held the ground and someone walked onto it — the defend mechanic).
+  # Ties between defenders, or a cell with no defender at all, fall back to the
+  # lowest id. Either way the winner seizes every other convoy's shipment.
   defp capture_cell(world, cell, group) do
     distinct_owners = group |> Enum.map(& &1.owner) |> Enum.uniq()
 
     if length(distinct_owners) >= 2 do
-      [winner | losers] = Enum.sort_by(group, & &1.id)
+      sorted = Enum.sort_by(group, & &1.id)
+      defended? = Enum.any?(sorted, &(&1.last_action == :defend))
+      winner = Enum.find(sorted, hd(sorted), &(&1.last_action == :defend))
+      losers = Enum.reject(sorted, &(&1.id == winner.id))
       seized = losers |> Enum.map(& &1.cargo) |> Enum.sum()
+
+      verb =
+        if defended?,
+          do: "held #{fmt(cell)} and seized",
+          else: "ambushed #{length(losers)} convoy(s) at #{fmt(cell)}, seizing"
 
       world
       |> update_entity(winner.id, &%{&1 | cargo: &1.cargo + seized, last_action: :seize})
       |> drop_entities(Enum.map(losers, & &1.id))
-      |> note(
-        "#{winner.owner}/C#{winner.id} ambushed #{length(losers)} convoy(s) at #{fmt(cell)}, seizing #{seized} credits' worth."
-      )
+      |> note("#{winner.owner}/C#{winner.id} #{verb} #{seized} credits' worth.")
     else
       world
     end

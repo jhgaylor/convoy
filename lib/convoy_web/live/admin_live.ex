@@ -63,6 +63,45 @@ defmodule ConvoyWeb.AdminLive do
     {:noreply, refresh(socket)}
   end
 
+  # Retune a region's game-balance knobs live. The Region validates + coerces the
+  # raw form strings, merges them into the world's config, and the change takes
+  # effect on the very next tick (real-time). A no-op for a stopped region.
+  def handle_event("set_config", %{"region" => region, "config" => config}, socket) do
+    Engine.set_config(region, config)
+    {:noreply, refresh(socket)}
+  end
+
+  # The tweakable game values, grouped for the editor. Order here drives render order.
+  @config_fields [
+    {"World & resources",
+     [
+       {:resource_nodes, "Ore nodes / room"},
+       {:resource_amount, "Ore per node"},
+       {:replenish_threshold, "Replenish at ≤ nodes"}
+     ]},
+    {"Harvesters",
+     [
+       {:harvesters, "Harvesters / player"},
+       {:cargo_max, "Base cargo capacity"},
+       {:cargo_step, "Cargo per upgrade"}
+     ]},
+    {"Forge & tech ladder",
+     [
+       {:base_refine_rate, "Refine / tick"},
+       {:base_fuel_budget, "Base fuel budget"},
+       {:fuel_step, "Fuel per upgrade"},
+       {:max_fuel_level, "Max fuel level"},
+       {:build_cost_refine, "Refine upgrade cost"},
+       {:build_cost_cargo, "Cargo upgrade cost"},
+       {:build_cost_fuel, "Fuel upgrade cost"}
+     ]},
+    {"Convoys & market",
+     [
+       {:shipment_size, "Shipment size (goods)"},
+       {:shipment_value, "Shipment value (credits)"}
+     ]}
+  ]
+
   # --- data gathering ---
 
   defp refresh(socket) do
@@ -273,30 +312,39 @@ defmodule ConvoyWeb.AdminLive do
                   :if={MapSet.member?(@expanded, r.region_id)}
                   class="border-b border-slate-800/60 bg-slate-950/40"
                 >
-                  <td colspan="10" class="px-6 py-2">
-                    <%= if r.scores == %{} do %>
-                      <span class="text-[11px] text-slate-600">No players in this region.</span>
-                    <% else %>
-                      <div class="flex flex-wrap gap-2">
-                        <%= for {player, score} <- Enum.sort_by(r.scores, fn {_p, s} -> -s end) do %>
-                          <span class="inline-flex items-center gap-2 bg-slate-800 rounded px-2 py-1 text-xs">
-                            <span class="font-mono text-slate-200">{player}</span>
-                            <span class="font-mono text-slate-400">{score}</span>
-                            <button
-                              :if={r.status != :stopped}
-                              phx-click="kick"
-                              phx-value-region={r.region_id}
-                              phx-value-player={player}
-                              data-confirm={"Kick '#{player}' from #{r.region_id}?"}
-                              class="text-rose-400 hover:text-rose-300"
-                              title="kick player"
-                            >
-                              ✕
-                            </button>
-                          </span>
-                        <% end %>
+                  <td colspan="10" class="px-6 py-3 space-y-4">
+                    <%!-- players + scoreboard --%>
+                    <div>
+                      <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
+                        players
                       </div>
-                    <% end %>
+                      <%= if r.scores == %{} do %>
+                        <span class="text-[11px] text-slate-600">No players in this region.</span>
+                      <% else %>
+                        <div class="flex flex-wrap gap-2">
+                          <%= for {player, score} <- Enum.sort_by(r.scores, fn {_p, s} -> -s end) do %>
+                            <span class="inline-flex items-center gap-2 bg-slate-800 rounded px-2 py-1 text-xs">
+                              <span class="font-mono text-slate-200">{player}</span>
+                              <span class="font-mono text-slate-400">{score}</span>
+                              <button
+                                :if={r.status != :stopped}
+                                phx-click="kick"
+                                phx-value-region={r.region_id}
+                                phx-value-player={player}
+                                data-confirm={"Kick '#{player}' from #{r.region_id}?"}
+                                class="text-rose-400 hover:text-rose-300"
+                                title="kick player"
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          <% end %>
+                        </div>
+                      <% end %>
+                    </div>
+
+                    <%!-- live game-value tuning --%>
+                    <.config_editor row={r} />
                   </td>
                 </tr>
               <% end %>
@@ -311,9 +359,64 @@ defmodule ConvoyWeb.AdminLive do
         </section>
 
         <p class="text-[10px] text-slate-600">
-          Refreshes every 1s · ▸ expand a region to kick players · Stop frees compute (a persisted region resumes when reopened) · Delete also removes its snapshot.
+          Refreshes every 1s · ▸ expand a region to tune its game values &amp; kick players · Stop frees compute (a persisted region resumes when reopened) · Delete also removes its snapshot.
         </p>
       </div>
+    </div>
+    """
+  end
+
+  # Live editor for a region's tweakable game values. Submits the whole config
+  # at once; the Region merges + validates and the new values take effect next
+  # tick. Disabled for a stopped region (no process to receive the change).
+  attr :row, :map, required: true
+
+  defp config_editor(assigns) do
+    assigns = assign(assigns, :groups, @config_fields)
+
+    ~H"""
+    <div>
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">game values</div>
+        <span :if={@row.status == :stopped} class="text-[10px] text-slate-600">
+          resume to edit
+        </span>
+      </div>
+      <form phx-submit="set_config" class="space-y-3">
+        <input type="hidden" name="region" value={@row.region_id} />
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-x-5 gap-y-3">
+          <div :for={{group, fields} <- @groups}>
+            <div class="text-[10px] font-semibold text-slate-400 mb-1">{group}</div>
+            <div class="space-y-1">
+              <label
+                :for={{key, label} <- fields}
+                class="flex items-center justify-between gap-2 text-[11px]"
+              >
+                <span class="text-slate-400">{label}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  name={"config[#{key}]"}
+                  value={Map.get(@row.config, key)}
+                  disabled={@row.status == :stopped}
+                  class="w-20 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 font-mono text-right text-slate-200 focus:border-sky-500 focus:outline-none disabled:opacity-40"
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+        <button
+          type="submit"
+          disabled={@row.status == :stopped}
+          class="px-3 py-1 rounded text-[11px] bg-sky-500/80 hover:bg-sky-500 text-slate-950 font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Apply (live)
+        </button>
+        <span class="ml-2 text-[10px] text-slate-600">
+          Takes effect next tick. Harvester count / cargo / room layout apply to new players &amp; replenished nodes.
+        </span>
+      </form>
     </div>
     """
   end

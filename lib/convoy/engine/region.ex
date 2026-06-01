@@ -36,11 +36,12 @@ defmodule Convoy.Engine.Region do
 
   @default_tick_ms 400
   @snapshot_every 50
-  # Bumped to 6: per-player private harvesting rooms + a shared market room —
-  # the world dropped the single shared `resources` map for a `rooms` map and
-  # gained `market_entry`, and entities carry a `room`. v5 = cross-region
-  # border-crossing fields; v4 = player Memory; v3 = the Forge bases shape.
-  @snapshot_version 6
+  # Bumped to 7: the world gained a `config` map (admin-tweakable balance knobs —
+  # ore per node, harvest/cargo size, shipment value, refine rate, build costs,
+  # fuel budget…). v6 = per-player private harvesting rooms + shared market room;
+  # v5 = cross-region border-crossing fields; v4 = player Memory; v3 = the Forge
+  # bases shape. A snapshot from an older shape is discarded (region starts fresh).
+  @snapshot_version 7
 
   # Scale-to-zero activation (primer §5). A running region with no spectators is
   # **warm**: it still advances (it's a persistent world) but ticks much more
@@ -115,6 +116,14 @@ defmodule Convoy.Engine.Region do
 
   @doc "Credit a player here for a shipment that sold in another region (credit-back, §4)."
   def credit(id, owner, amount), do: GenServer.cast(via(id), {:credit, owner, amount})
+
+  @doc """
+  Retune this region's game-balance config live (primer §3: the operator tunes
+  the world, not the bots). `overrides` is a map of `%{knob => integer}` (see
+  `World.default_config/0`); unknown keys are dropped and the change takes effect
+  on the very next tick. Returns the merged config.
+  """
+  def set_config(id, overrides), do: GenServer.call(via(id), {:set_config, overrides})
 
   def play(id), do: GenServer.cast(via(id), :play)
   def pause(id), do: GenServer.cast(via(id), :pause)
@@ -193,6 +202,52 @@ defmodule Convoy.Engine.Region do
         {:reply, :ok, state}
     end
   end
+
+  def handle_call({:set_config, overrides}, _from, state) do
+    world = World.put_config(state.world, normalize_config(overrides))
+    state = %{state | world: world}
+
+    Convoy.EventLog.append(state.id, world.tick, :config, %{config: world.config})
+    persist_now(state)
+    broadcast(state)
+    {:reply, {:ok, world.config}, state}
+  end
+
+  # Coerce form/string input into the integer-keyed map World.put_config expects.
+  # Anything non-numeric or negative is dropped, so a bad field can't break the sim.
+  defp normalize_config(overrides) do
+    overrides
+    |> Enum.flat_map(fn {k, v} ->
+      key = if is_atom(k), do: k, else: safe_atom(to_string(k))
+
+      case {key, coerce_int(v)} do
+        {nil, _} -> []
+        {_k, nil} -> []
+        {k, n} when n >= 0 -> [{k, n}]
+        _ -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  # Only resolve to atoms that are already valid config keys — never create new
+  # atoms from untrusted input.
+  defp safe_atom(str) do
+    String.to_existing_atom(str)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp coerce_int(n) when is_integer(n), do: n
+
+  defp coerce_int(s) when is_binary(s) do
+    case Integer.parse(String.trim(s)) do
+      {n, _} -> n
+      :error -> nil
+    end
+  end
+
+  defp coerce_int(_), do: nil
 
   @impl true
   def handle_cast({:observe, pid}, state) do
@@ -354,7 +409,7 @@ defmodule Convoy.Engine.Region do
 
     {intents, fuel} =
       world.entities
-      # Convoys are auto-piloted by the Sim — only harvesters run player code.
+      # Harvesters run the owner's `decide`.
       |> Enum.filter(&(&1.kind == :harvester))
       |> Enum.sort_by(& &1.id)
       |> Enum.map_reduce(0, fn e, acc ->
@@ -363,7 +418,19 @@ defmodule Convoy.Engine.Region do
         {{e.id, intent}, acc + used}
       end)
 
-    world = Sim.apply_intents(world, intents)
+    # Convoys run the owner's optional `convoy` controller (default :advance).
+    # Keyed by entity id so the Sim can move each per its stance (PvP defend).
+    {convoy_intents, fuel} =
+      world.entities
+      |> Enum.filter(&(&1.kind == :convoy))
+      |> Enum.sort_by(& &1.id)
+      |> Enum.reduce({%{}, fuel}, fn e, {acc, fuel_acc} ->
+        budget = World.fuel_budget(world, e.owner)
+        {intent, used} = decide_convoy(state.players[e.owner], e, world, budget)
+        {Map.put(acc, e.id, intent), fuel_acc + used}
+      end)
+
+    world = Sim.apply_intents(world, intents, convoy_intents)
     # Drain this tick's cross-region outbox into casts to the neighbor / origin
     # regions (primer §4 border handoff + credit-back). Empty for a region with
     # no neighbor, so single-region play does no extra work.
@@ -397,6 +464,14 @@ defmodule Convoy.Engine.Region do
 
   # No program (player gone, or load failed): the entity idles.
   defp decide_for(_player, _e, _world, _budget), do: {:idle, 0}
+
+  defp decide_convoy(%{wasm: inst}, e, world, budget) when not is_nil(inst) do
+    {:ok, intent, used} = Wasm.convoy_decide(inst, e, world, budget)
+    {intent, used}
+  end
+
+  # No program: the convoy stays on auto-pilot (advance toward market).
+  defp decide_convoy(_player, _e, _world, _budget), do: {:advance, 0}
 
   defp schedule_tick(state) do
     %{state | timer: Process.send_after(self(), :tick, tick_interval(state))}
@@ -502,7 +577,16 @@ defmodule Convoy.Engine.Region do
   end
 
   defp rebuild_world(seed, state) do
-    fresh = World.generate(seed: seed, region_id: state.id, neighbor: state.world.neighbor)
+    # A reset regenerates the world but KEEPS the operator's tuned config — they
+    # tweaked the economy deliberately; a reseed shouldn't silently undo it.
+    fresh =
+      World.generate(
+        seed: seed,
+        region_id: state.id,
+        neighbor: state.world.neighbor,
+        config: World.config(state.world)
+      )
+
     # generate already seeded the default player; add the rest back.
     Enum.reduce(Map.keys(state.players), fresh, fn pid, world ->
       World.add_player(world, pid)
@@ -562,7 +646,8 @@ defmodule Convoy.Engine.Region do
       activation: activation(state),
       tick_ms: state.tick_ms,
       last_fuel: state.last_fuel,
-      fuel_budget: World.base_fuel_budget(),
+      fuel_budget: World.base_fuel_budget(state.world),
+      config: World.config(state.world),
       scores: World.scoreboard(state.world),
       bases: state.world.bases,
       players: player_summaries(state)
@@ -607,6 +692,7 @@ defmodule Convoy.Engine.Region do
       entities: length(state.world.entities),
       ore_remaining: World.ore_remaining(state.world),
       delivered: World.total_refined(state.world),
+      config: World.config(state.world),
       persist: state.persist,
       wasm_instances: length(wasm_pids),
       memory: mem + wasm_mem,

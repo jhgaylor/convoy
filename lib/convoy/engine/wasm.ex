@@ -44,6 +44,34 @@ defmodule Convoy.Engine.Wasm do
   | 30 | launch a convoy to market (only at base, if affordable) |
   | anything else (incl. 0) | idle |
 
+  ## Controlling convoys (optional `convoy` export)
+
+  By default convoys auto-pilot to the market and the strategy is only *when* to
+  launch. A module may additionally export a `convoy` function to steer each of
+  its convoys every tick (PvP). It's **optional** — a module without it leaves
+  convoys on auto-pilot, so this is fully backward compatible and never touches
+  the `decide` ABI above.
+
+      convoy(cargo, market_dx, market_dy, dist_market, tick,
+             enemy_dx, enemy_dy, enemy_dist, enemy_adjacent) -> i32
+
+  - `market_dx`/`market_dy`: sign of the step toward the market
+  - `dist_market`: Manhattan distance to the market
+  - `enemy_dx`/`enemy_dy`: sign of the step toward the nearest enemy convoy
+    (0/0 if none); `enemy_dist`: its Manhattan distance (`-1` if none);
+    `enemy_adjacent`: 1 if an enemy convoy is within one cell
+
+  | code | convoy stance |
+  |------|---------------|
+  | 1 | **defend** — hold this cell; win any collision a mover causes here |
+  | 2 | **hunt** — step toward the nearest enemy convoy (advance if none) |
+  | 10/11/12/13 | steer +x / -x / +y / -y |
+  | anything else (incl. 0) | advance toward the market (the default) |
+
+  Defending forfeits progress toward your own market sale — the price of lying in
+  wait. The capture rule: a defender beats any convoy that moved onto its cell;
+  with no defender present, the lowest-id convoy wins (as before).
+
   ## The Forge (primer §1)
 
   `unload` delivers cargo into your base's raw `ore` stockpile. Each tick the
@@ -206,6 +234,34 @@ defmodule Convoy.Engine.Wasm do
     end
   end
 
+  @doc """
+  Run the player module's optional `convoy` controller for one convoy under a
+  fuel budget, returning `{:ok, intent, fuel_used}`.
+
+  If the module doesn't export `convoy`, convoys stay on auto-pilot: returns
+  `{:ok, :advance, 0}` (no code runs, no fuel spent). A trap / fuel exhaustion is
+  contained the same way as `decide/4` — the convoy just advances that tick.
+  """
+  @spec convoy_decide(instance(), World.entity(), World.t(), pos_integer()) ::
+          {:ok, term(), non_neg_integer()}
+  def convoy_decide(%{pid: pid, store: store}, convoy, %World{} = world, fuel_budget) do
+    if Wasmex.function_exists(pid, "convoy") do
+      args = build_convoy_view(convoy, world)
+      StoreOrCaller.set_fuel(store, fuel_budget)
+
+      case Wasmex.call_function(pid, "convoy", args) do
+        {:ok, [code]} ->
+          used = fuel_budget - remaining_fuel(store, 0)
+          {:ok, convoy_code_to_intent(code, convoy, world), used}
+
+        {:error, _reason} ->
+          {:ok, :advance, fuel_budget}
+      end
+    else
+      {:ok, :advance, 0}
+    end
+  end
+
   # --- player Memory (primer §8) ---
   #
   # A player's wasm instance is reused across ticks (the Region holds it), so a
@@ -316,6 +372,43 @@ defmodule Convoy.Engine.Wasm do
       bool(World.can_launch?(world, owner))
     ]
   end
+
+  # --- convoy controller view + intents ---
+
+  defp build_convoy_view(convoy, world) do
+    pos = {convoy.x, convoy.y}
+    {mdx, mdy} = World.step_toward(pos, World.market(world))
+    dist_market = manhattan(pos, World.market(world))
+
+    case World.nearest_enemy_convoy(world, convoy) do
+      nil ->
+        [convoy.cargo, mdx, mdy, dist_market, world.tick, 0, 0, -1, 0]
+
+      enemy ->
+        epos = {enemy.x, enemy.y}
+        {edx, edy} = World.step_toward(pos, epos)
+        ed = manhattan(pos, epos)
+        [convoy.cargo, mdx, mdy, dist_market, world.tick, edx, edy, ed, bool(ed <= 1)]
+    end
+  end
+
+  defp convoy_code_to_intent(1, _c, _w), do: :defend
+  defp convoy_code_to_intent(2, c, w), do: hunt(c, w)
+  defp convoy_code_to_intent(10, _c, _w), do: {:move, {1, 0}}
+  defp convoy_code_to_intent(11, _c, _w), do: {:move, {-1, 0}}
+  defp convoy_code_to_intent(12, _c, _w), do: {:move, {0, 1}}
+  defp convoy_code_to_intent(13, _c, _w), do: {:move, {0, -1}}
+  defp convoy_code_to_intent(_other, _c, _w), do: :advance
+
+  # Step toward the nearest enemy convoy; advance toward market if there is none.
+  defp hunt(c, w) do
+    case World.nearest_enemy_convoy(w, c) do
+      nil -> :advance
+      enemy -> {:move, World.step_toward({c.x, c.y}, {enemy.x, enemy.y})}
+    end
+  end
+
+  defp manhattan({x, y}, {tx, ty}), do: abs(x - tx) + abs(y - ty)
 
   # --- guest → host intent ---
 
