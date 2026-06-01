@@ -12,25 +12,26 @@
 
 ## Where the game is today (so we don't re-propose what exists)
 
-The loop, in one breath: **WASM bots → harvesters mine ore in *private* rooms →
-the base forges ore into goods → spend goods on a 3-branch tech ladder
-(refine / cargo / fuel) → load goods onto a *convoy* → run it across ONE *shared,
-contested* market → convoys collide & seize each other's shipments (PvP) →
-credits = the score.**
+The loop, in one breath: **one WASM colony brain (`tick`) → harvesters mine ore in
+your *private* colony → the spawner's forge + refineries turn ore into goods →
+spend goods to build (refinery, storage) and spawn harvesters, all time+cost gated
+→ load goods onto a *convoy* → run it across ONE *shared, contested* market →
+convoys collide & seize each other's shipments (PvP) → credits = the score.**
 
 Already built and solid:
-- Deterministic tick loop (`Sim.tick/2`), intents-not-mutations, seeded RNG.
-- Event log + snapshot persistence — the **replay substrate exists** but isn't surfaced.
+- Deterministic tick loop (`Colony.Sim.tick`), intents-not-mutations, seeded RNG.
+- Snapshot persistence (`Colony.Persistence`) — the **replay substrate exists**
+  (determinism + tick-stamped snapshots) but isn't surfaced.
 - Persistent bot linear-memory across ticks *and* freeze/thaw.
-- Optional `convoy` steering export (defend / hunt / advance).
-- Hot/warm/cold region activation; live-tunable balance config (admin panel).
-- Spectator LiveView: scoreboard, trends sparklines (value/dⁿ/dt), per-room
-  grids, entity cards, event log. Admin ops page.
+- Convoy steering via commands (defend / hunt / move) over your own convoys.
+- Region persistence + restore on boot; live-tunable balance config; `/admin` ops page.
+- Spectator LiveView: scoreboard by credits, the shared market grid, per-colony
+  grids with build/spawn queues, getting-started + field-guide panels, example-bot library.
 
 The three biggest *gaps* (each is also a top pick below):
 1. **It's a programming game you can't write code in** — the page shows read-only
    starter code and tells you to `curl`/upload. No in-browser editor.
-2. **The replay substrate is built but invisible** — determinism + event log were
+2. **The replay substrate is built but invisible** — determinism + snapshots were
    designed for "the convoy-ambush review experience" (primer §6). Nothing plays it back.
 3. **The one contested space is a featureless grid** — the market is just empty
    cells between an entry door and a sell point. The headline mechanic has no terrain, no economics.
@@ -40,22 +41,22 @@ The three biggest *gaps* (each is also a top pick below):
 ## ★ Top picks (where I'd start)
 
 ### 1. ★ Replay viewer / "ambush theater"
-**Why:** The architecture was *built for this* — deterministic loop + event log +
+**Why:** The architecture was *built for this* — deterministic loop + tick-stamped
 snapshots (primer §6 literally names "the convoy-ambush review experience"). It's
 the highest payoff-to-novelty ratio: turns a live-only spectator into something
 you can scrub, share, and learn from. Shareable replay links (`/replay/<region>/<from>-<to>`)
 are a viral/onboarding loop too.
-**Shape:** scrub bar over a tick range; re-run `Sim.tick` from a snapshot to
+**Shape:** scrub bar over a tick range; re-run `Colony.Sim.tick` from a snapshot to
 regenerate exact intermediate frames (it's deterministic, so we don't have to store
 every frame — *feasibility agent is confirming what's stored vs. needs storing*).
-Auto-jump-to-ambush ("next collision") buttons. Reuse the existing room-grid render.
+Auto-jump-to-ambush ("next collision") buttons. Reuse the existing colony/market-grid render.
 **Effort:** Medium. **Impact:** High.
 
 ### 2. ★ In-browser code editor + live compile
 **Why:** Biggest onboarding unlock. It's a *programming* game whose own page can't
 run code — the friction from "read starter code" to "playing" is a curl command.
 The compile pipeline (`Compile.to_wasm/2`, builder service) and submit path
-(`Loader.prepare/2` → `Engine.submit_player/5`) already exist and are reused by upload.
+(`Loader.prepare/2` → `Region.submit_player/4`) already exist and are reused by upload.
 **Shape:** editor (textarea → Monaco/CodeMirror) per language tab pre-filled with the
 template, a Submit button, inline compile-error panel, optional "test in a private
 sandbox region first." *Feasibility agent is checking if the compile call is safe to
@@ -68,11 +69,11 @@ it's an empty grid — so convoy steering barely matters and launch timing only
 matters for raw collision odds. Give the contested space real texture.
 **Ideas (all deterministic, mostly config-driven):**
 - **Terrain:** chokepoints/walls, hazard cells (lose cargo), bonus cells (+credits),
-  fast lanes. Forces real pathing decisions in the `convoy` export.
+  fast lanes. Forces real pathing decisions when steering convoys (the move/hunt/defend ops).
 - **Supply-driven price decay:** `shipment_value` falls as goods flood the market
   this window and recovers over time → punishes everyone dumping at once, rewards
-  spacing and reading the board. (The strategist bots already cooldown-space convoys;
-  this gives that a *reason* beyond ambush.)
+  spacing and reading the board. (A bot can already cooldown-space its convoys using
+  persistent memory; this gives that spacing a *reason* beyond ambush.)
 - **Multiple markets / arbitrage:** a near market (cheap, safe) vs. a far market
   (lucrative, contested) — a real risk/reward steering choice.
 **Effort:** Low–Medium per piece. **Impact:** High (deepens the core fight).
@@ -93,7 +94,7 @@ is never empty.
 
 Distilled from Screeps, Battlecode, Halite, Robocode, CodinGame, Bitburner, and
 Screeps Arena. The ones that **exploit infrastructure we already have** are
-marked ⚡ (cheapest wins given the seeded event-log + persisted-program-bytes
+marked ⚡ (cheapest wins given the seeded snapshots + persisted-program-bytes
 architecture).
 
 - **⚡ Self-seed players' past bot versions as opponents (Screeps Arena).** The
@@ -103,12 +104,12 @@ architecture).
   others') into a region as ranked AI opponents. Every solo player gets a worthy
   rival immediately, and can literally race their past self. *High impact, low
   effort given what's stored.*
-- **⚡ Compute-fuel "bucket" economy (Screeps' killer hook).** Turn the existing
-  fuel branch from a flat per-tick cap into a **bankable resource**: unused fuel
-  banks up to a cap, so a bot idles cheap while mining and **bursts** expensive
-  pathfinding/decisions on a contested convoy run. This is exactly the primer §7
-  "banking" open decision — and it makes the third tech branch *active strategy*
-  instead of a passive number. Deterministic (it's just per-entity state).
+- **⚡ Compute-fuel "bucket" economy (Screeps' killer hook).** Turn the flat
+  per-tick fuel cap into a **bankable resource**: unused fuel banks up to a cap, so
+  a bot idles cheap while mining and **bursts** expensive pathfinding/decisions on a
+  contested convoy run. This is exactly the primer §7 "banking" open decision — and
+  it makes the fuel budget *active strategy* instead of a passive number.
+  Deterministic (it's just per-colony state).
 - **⚡ Always-on ELO/TrueSkill ladder, no deadline (Halite).** "Submit anytime,
   climb forever" is the proven retention spine for async programming games, and
   scoring is already deterministic. Pairs with accounts/auth.
@@ -121,7 +122,7 @@ architecture).
   a permanent multiplicative perk (+refine, cheaper tech, bigger fuel cap) that
   resets world progress **but keeps their bot code**. Thematically perfect — the
   bot *is* the asset — and each re-run is faster, giving a mastery arc beyond one
-  climb. The 3-branch ladder is a natural augmentation tree.
+  climb. The build/upgrade tree is a natural augmentation tree.
 - **Seasonal resets with rotating themes/rules (Battlecode).** Periodically reroll
   ore distribution / tech costs / a market rule so the meta churns, returning and
   new players are on even footing, and there's a recurring "new season" hook.
@@ -137,15 +138,15 @@ architecture).
   that prowl the market and ambush *everyone*. Gives solo players a threat and
   drama even before a second human joins — solves the "empty arena feels dead"
   problem. Difficulty as a config knob.
-- **More tech branches.** The ladder is only refine/cargo/fuel. Add:
+- **More buildings / upgrades.** Today it's just refinery + storage (each level-able). Add:
   - **Speed** (convoy moves 2 cells/tick),
   - **Armor** (survive one ambush instead of instant seizure),
-  - **Stealth** (invisible to enemies' `enemy_dx/dy` until adjacent),
-  - **Scan/range** (richer convoy view: see further, predict collisions).
-  Each is a new intent code + a config-priced level; fits the existing `build` path.
+  - **Stealth** (hidden in rivals' market view until adjacent),
+  - **Scan/range** (richer market view: see further, predict collisions).
+  Each is a new building/upgrade + a config-priced level; fits the existing build path.
 - **Convoy HP / multi-tick combat.** Replace instant seize with a short skirmish
   (convoys trade blows over a few ticks) so escorts, armor, and disengaging matter.
-  Bigger change to `resolve_market`, but turns ambushes into *fights*.
+  Bigger change to the market step (`Market.step`), but turns ambushes into *fights*.
 - **Escort convoys.** Launch a cheap unarmed-but-defending convoy alongside a cargo
   run; the defend mechanic already exists, this just lets you stack it intentionally.
 - **Scheduled world events (deterministic, tick-keyed).** Ore rush (richer deposits),
@@ -178,14 +179,14 @@ architecture).
 ## Onboarding / developer experience (catalog)
 
 - **Interactive ABI playground / tutorial.** Guided first bot: step through what
-  each intent code does on a tiny map, "make the harvester pick up ore," etc.
+  each command op does on a tiny map, "make the harvester pick up ore," etc.
 - **Practice/sandbox region.** Test your bot alone (own seed, reset button) before
   joining the contested arena. Pairs with the editor.
-- **Per-harvester "why did it do that" inspector.** Surface the decided intent code
-  per entity per tick in the UI — a debugger for your own bot's decisions.
-- **Real language SDKs.** A `convoy-sdk` Rust crate / AS module with a typed `View`
-  struct + `Intent` enum so people stop hand-decoding 14 i32 params. Lowers the
-  single biggest authoring friction.
+- **Per-unit "why did it do that" inspector.** Surface the commands your brain
+  emitted per unit per tick in the UI — a debugger for your own bot's decisions.
+- **Real language SDKs.** A `convoy-sdk` Rust crate / AS module with typed `View` /
+  `Command` accessors so people stop hand-decoding the byte-offset view buffer.
+  Lowers the single biggest authoring friction.
 
 ## Meta / social / competitive (catalog)
 
@@ -201,7 +202,7 @@ architecture).
 - **Analytical warm fast-forward (primer §5 open problem).** Closed-form refine
   jump for warm regions (the production side is already rate-based and solvable).
 - **Wire the cross-region market into the main flow (primer §4 "not yet built").**
-  Real multi-region topology; leans on the event log as replay source of record.
+  Real multi-region topology; leans on snapshots as replay source of record.
 
 ---
 
@@ -217,23 +218,23 @@ architecture).
 - **Comparable-games research: done** (Screeps, Battlecode, Halite, Robocode,
   CodinGame, Bitburner, Screeps Arena). Findings folded into "Proven mechanics
   worth stealing" above. Headline: the cheapest high-impact wins all ride our
-  existing seeded-event-log + persisted-program-bytes architecture — **replay
+  existing seeded-snapshot + persisted-program-bytes architecture — **replay
   viewer** (Halite), **self-seeding past bot versions to kill cold-start**
   (Screeps Arena), the **fuel-bucket economy** (Screeps), and **deterministic ELO**
   (Halite). Robocode says: make the market-collision moment a first-class,
   clip-worthy spectator render — that's our hero shot.
 
 - **Replay-viewer feasibility: CONFIRMED feasible, ~MVP in 1 focused day.**
-  - The chain is all there: snapshots persist `{world@tickT, program bytes, bot
-    memory, config, seed}` (every 50 ticks, `Region @snapshot_every`), the event
-    log is tick-stamped control events (`submit/kick/reset/arrival/config`), and
-    `Sim.tick` is pure. So **re-running from a snapshot regenerates bit-identical
-    intermediate frames** — we do *not* need to store every frame.
+  - The chain is mostly there: snapshots persist `{world@tickT, market, program
+    bytes, bot memory, config, seed}` (every 50 ticks, `Region @snapshot_every`) and
+    `Colony.Sim.tick` is pure. So **re-running from a snapshot regenerates bit-identical
+    intermediate frames** — we do *not* need to store every frame. (One gap vs. the
+    old plan: v2 has no persistent control-event log, so submit/reset events would
+    need to be captured alongside snapshots for fully faithful replay.)
   - **What to build:** a `Convoy.Replay` module (`load_at_tick(region, tick)` =
     nearest snapshot ≤ tick → reinstantiate WASM w/ saved memory → run
-    `Sim.tick` forward, applying control events at their ticks), an
-    `Engine.seek_to_tick/2`, and a scrubber component in `sim_live.ex`. Est.
-    ~180–250 LOC, ~9–10h incl. tests.
+    `Colony.Sim.tick` forward), a `Region.seek_to_tick/2`, and a scrubber component
+    in `colony_live.ex`. Est. ~180–250 LOC, ~9–10h incl. tests.
   - **Gotchas to design around:** (a) a `reset` between snapshot and target means
     replay from a *later* snapshot, not just applying events — need a snapshot
     index by tick; (b) cross-region convoys (`departing`/`pending_credits`) lose
@@ -246,7 +247,7 @@ architecture).
 
 - **In-browser-editor feasibility: CONFIRMED feasible, mostly frontend.**
   - The whole submit path already exists and is reused by file upload:
-    `Loader.prepare/2` → `Engine.submit_player/5`, and **compile errors are
+    `Loader.prepare/2` → `Region.submit_player/4`, and **compile errors are
     already part of region state and broadcast to spectators** (the scoreboard
     shows a per-player ⛔ with the error in its title). So a paste-and-submit
     editor mostly needs a `<textarea>` (→ Monaco/CodeMirror later), a language

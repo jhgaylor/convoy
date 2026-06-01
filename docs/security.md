@@ -9,7 +9,7 @@ primer's §7/§10 defense-in-depth, and where each layer stands.
 
 | Surface | Where it runs | Threat |
 |---------|---------------|--------|
-| **Running a bot** (`decide`) | the app pod, in-BEAM via Wasmtime | CPU/memory abuse, escape, taking down the node |
+| **Running a bot** (`tick`) | the app pod, in-BEAM via Wasmtime | CPU/memory abuse, escape, taking down the node |
 | **Compiling a bot** (`rustc`, `tinygo`, `asc`, `clang`, `zig`) | the **builder** pod | malicious `build.rs` / post-install hooks / egress |
 
 Keeping them apart is the whole point: the compile step never runs in the app
@@ -17,15 +17,15 @@ pod, and the run step never reaches a toolchain, the database, or the network.
 
 ## Layer 1 — the WASM runner (in-BEAM, done)
 
-`Convoy.Engine.Wasm` runs each module through Wasmtime (via `wasmex`) with:
+`Convoy.Engine.ColonyWasm` runs each module through Wasmtime (via `wasmex`) with:
 
-- **Zero ambient authority** — an empty import set. A module can read the
-  read-only per-entity view we pass and return one intent code. That is the
-  entire capability surface; there is no host call to abuse.
-- **Fuel metering** — Wasmtime counts instructions; a per-entity budget bounds
-  CPU. An infinite loop exhausts fuel and **traps**; `wasmex` surfaces the trap
-  as `{:error, _}` and the runner degrades that entity to `:idle`. The misbehaving
-  bot wastes its own turn and nothing more.
+- **Zero ambient authority** — an empty import set. A module reads the read-only
+  colony view we write into its `inbuf` and returns a list of commands from its
+  `outbuf`. That is the entire capability surface; there is no host call to abuse.
+- **Fuel metering** — Wasmtime counts instructions; one per-tick budget per colony
+  bounds CPU. An infinite loop exhausts fuel and **traps**; `wasmex` surfaces the
+  trap as `{:error, _}` and the runner contains it as `{:ok, [], budget}` — the
+  colony forfeits its turn (issues no commands) and nothing more.
 - **`StoreLimits`** — a 16 MB linear-memory cap plus table/instance limits. A
   memory bomb is rejected at instantiation or denied the growth, never OOMing
   the node.
@@ -33,9 +33,9 @@ pod, and the run step never reaches a toolchain, the database, or the network.
   not linked to their region, so an instantiation crash is contained and
   surfaced as an error instead of taking the region down.
 
-Proven, not asserted: see `test/convoy/wasm_test.exs` (constrained instantiation,
-deterministic fuel, infinite-loop containment, memory-bomb rejection — and that
-the BEAM survives each).
+Proven, not asserted: see `test/convoy/colony_wasm_test.exs` (constrained
+instantiation, deterministic fuel, infinite-loop containment, memory-bomb
+rejection, unbounded-growth containment — and that the BEAM survives each).
 
 ## Layer 1 — the compile service (separate pod, done)
 
@@ -79,7 +79,7 @@ What's in place toward it, and what remains:
   unschedulable.
 - **Further (architectural):** the primer's strongest form splits the runner
   into its own process/pool that the sim core talks to over a pipe (so a NIF
-  crash can't even touch the sim). `Convoy.Engine.Wasm` is the seam for that;
+  crash can't even touch the sim). `Convoy.Engine.ColonyWasm` is the seam for that;
   it's not split today.
 
 ## Other notes

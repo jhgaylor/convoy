@@ -28,8 +28,8 @@ defmodule Convoy.Compile do
   `:wat` compiles for free (Wasmtime reads text). `:assemblyscript` uses the
   pure-JS `asc` compiler (no native toolchain). `:rust` and `:tinygo` need
   their native toolchains installed; `available?/1` reports presence and
-  `install_hint/1` says how to get them. Every module must export `decide`
-  with the ABI in `Convoy.Engine.Wasm`.
+  `install_hint/1` says how to get them. Every module must export the colony ABI
+  (`inbuf`/`outbuf`/`tick`) defined in `Convoy.Engine.ColonyAbi`.
   """
 
   @timeout_ms 20_000
@@ -606,8 +606,8 @@ defmodule Convoy.Compile do
 
           # `wasm-unknown`: a freestanding target with NO host imports (no WASI,
           # no JS runtime) — required because the sim instantiates modules with
-          # an empty import set. `-scheduler=none -gc=leaking` keep a pure
-          # `//export decide` function from pulling in runtime imports.
+          # an empty import set. `-scheduler=none -gc=leaking` keep the pure
+          # `//export tick` (+ inbuf/outbuf) functions from pulling in runtime imports.
           run(
             bin,
             [

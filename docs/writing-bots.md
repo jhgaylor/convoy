@@ -1,207 +1,199 @@
 # Writing a Convoy bot
 
-Your bot is a small **WebAssembly module** that exports one function, `decide`.
-Each tick, for each of your harvesters, the sim calls `decide` with a read-only
-view of that harvester's situation, and you return a single **intent code**. The
-sim resolves intents authoritatively — you can't move a harvester or take ore
-directly, you can only *decide*.
+Your bot is a small **WebAssembly module** that is your colony's *brain*. Each
+tick, the sim writes a read-only view of your whole colony (and the shared
+market) into your module's memory, calls your `tick` function once, and reads back
+a list of **commands** — one per unit or building you want to act. The sim
+resolves those commands authoritatively: you can't move a harvester or seize a
+shipment directly, you can only *command* it, and an illegal command degrades to a
+no-op. One brain runs your entire colony — there is no per-unit callback.
 
-You harvest in your **own private room**: your harvesters, your base, and your
-ore deposits, with no other player allowed in — so `on_resource`, `res_dx/dy`,
-and the rest of the view always describe *your* room alone. Everyone shares one
-thing: the **market**, the room your convoys run to (see [Convoys & the
-contested market](#convoys--the-contested-market)).
+You play in your **own private colony** — your harvesters, buildings, and ore
+deposits, with no other player allowed in. Everyone shares exactly one thing: the
+**market**, the space your convoys run to and where they can be ambushed (see
+[Convoys & the contested market](#convoys--the-contested-market)).
 
 Two hard rules make any language work (or not):
 
-1. The module must export `decide` with the exact signature below.
+1. The module must export the **colony ABI**: `inbuf`, `outbuf`, and `tick` (plus
+   its `memory`). The exact byte layout is below.
 2. The module must have **zero host imports** — no WASI, no JS runtime, nothing.
    It runs in a locked-down sandbox under a per-tick fuel (instruction) budget.
 
 That second rule is why some languages are a great fit and others aren't (see
 [Language support](#language-support)).
 
-## The `decide` ABI
+## The colony loop
 
-`decide` takes fourteen `i32` parameters and returns one `i32`:
+What your `tick` is steering, in one breath:
+
+1. **Mine.** Harvesters move onto ore deposits and `harvest` ore into their cargo.
+2. **Haul & forge.** A full harvester `transfer`s its cargo into an adjacent
+   building. Your spawner has a small built-in forge, and **refineries** multiply
+   the rate — each tick, ore turns into **goods** (bounded by your storage cap).
+3. **Build & grow.** Spend goods to `build` refineries and storage, and `spawn`
+   more harvesters. Construction and spawning take time — the pace is deliberate.
+4. **Ship.** `launch` a convoy: it loads goods and runs across the single shared
+   **contested market** to sell for **credits** — the score.
+5. **Fight.** When two colonies' convoys share a market cell, one **seizes** the
+   other's shipment. That's the only PvP; your base is never attacked. The stake
+   is only the shipment in transit. Steer your convoys to `hunt` and `defend`.
+
+## The ABI: a memory handshake
+
+The module has zero host imports, so I/O happens through **linear memory** at two
+buffers your module exposes. Each tick the host does:
 
 ```
-decide(cargo, cargo_max, at_base, on_resource,
-       res_dx, res_dy, base_dx, base_dy, tick,
-       base_ore, base_goods, can_refine, can_cargo, can_fuel,
-       can_launch) -> code
+host: write encode_view(view) into the bytes at inbuf()
+host: call tick(view_len) -> command_count
+host: read command_count * 16 bytes starting at outbuf()
+host: decode each 16-byte record as a command
 ```
 
-| param | meaning |
-|-------|---------|
-| `cargo`, `cargo_max` | ore you're carrying / your capacity |
-| `at_base` | 1 if you're on the base cell, else 0 |
-| `on_resource` | 1 if you're on a cell with ore, else 0 |
-| `res_dx`, `res_dy` | direction (−1/0/1) to the nearest ore |
-| `base_dx`, `base_dy` | direction (−1/0/1) to base |
-| `tick` | the current tick number |
-| `base_ore` | raw ore in your base, waiting to be refined |
-| `base_goods` | refined goods you can spend on upgrades or shipments |
-| `can_refine`, `can_cargo`, `can_fuel` | 1 if you can afford the next level of that tech right now, else 0 |
-| `can_launch` | 1 if you can afford to load a convoy and ship it to market, else 0 |
+Your `tick` reads its colony out of the IN buffer, decides, and writes a packed
+array of fixed-size command records into the OUT buffer, returning how many.
+Everything is **fixed-stride little-endian** — trivial to read/write with no
+allocator (the guest is typically `no_std`/freestanding), and bit-identical so
+replays stay deterministic. The single source of truth for the layout is
+[`lib/convoy/engine/colony_abi.ex`](../lib/convoy/engine/colony_abi.ex); the
+in-file boilerplate in [`examples/colony.rs`](../examples/colony.rs) mirrors it
+byte for byte.
 
-Return one of these intent codes:
+### The view (host → guest), all little-endian
 
-| code | intent |
-|------|--------|
-| `1` | harvest |
-| `2` | unload (deliver cargo into your base's stockpile) |
-| `3` | move toward base |
-| `4` | move toward nearest resource |
-| `5` | wander (deterministic) |
-| `6` | move toward the resource farthest from base |
-| `10` / `11` / `12` / `13` | move +x / −x / +y / −y |
-| `20` / `21` / `22` | build refine / cargo / fuel (only at base, if affordable) |
-| `30` | launch a convoy to the market (only at base, if affordable) |
-| anything else (incl. `0`) | idle |
+A 28-byte header, then four packed arrays back to back:
 
-Codes `3`/`4`/`6` let the sim do the pathfinding; `10`–`13` move one step in a
-direction you choose (using `res_dx`/`base_dx`/etc.). `decide` is a **pure
-function** — same inputs, same output — so there's no per-bot memory yet.
+```
+header (28 bytes):
+  tick:u32 @0   width:u16 @4   height:u16 @6
+  ore:u32 @8    goods:u32 @12  credits:u32 @16
+  n_units:u16 @20  n_buildings:u16 @22  n_deposits:u16 @24  n_market:u16 @26
+units[n_units]      12B each: id:u32 kind:u8 x:u8 y:u8 cargo:u16 cargo_max:u16 _pad:u8
+buildings[n_bld]    10B each: id:u32 kind:u8 x:u8 y:u8 level:u8 progress:u8 _pad:u8
+deposits[n_dep]      4B each: x:u8 y:u8 amount:u16
+market[n_market]    10B each: id:u32 owner:u8 x:u8 y:u8 cargo:u16 _pad:u8
+```
 
-## The Forge: refining and the tech ladder
+The arrays start at offset 28. Walk them in order: units begin at `28`, buildings
+at `28 + n_units*12`, deposits after that, the market last.
 
-Delivering ore is only the start. `unload` (code `2`) drops your cargo into your
-base's **raw ore stockpile** (`base_ore`). Each tick, the base automatically
-**refines** ore into **goods** (`base_goods`) at a rate set by your refine tech —
-and your lifetime refined total is your score on the leaderboard (spending goods
-never lowers it).
+- **units** — your units. `kind` 0 = harvester. `cargo`/`cargo_max` is what it
+  carries vs. its capacity.
+- **buildings** — your buildings. `kind` 0 = spawner (pre-built at your base),
+  1 = refinery, 2 = storage. `progress` 255 means finished; less means still
+  under construction. `level` is its upgrade level.
+- **deposits** — ore on the map: `amount` is how much is left at `(x,y)`.
+- **market** — every convoy currently in transit on the shared market.
+  `owner` is **0 for your own convoys, 1 for a rival's** — that's how you tell
+  friend from foe. This is the only place you see other players.
 
-Standing on the base with goods to spare, spend them to climb the tech ladder:
+### The commands (guest → host)
 
-| build | code | effect |
-|-------|------|--------|
-| **refine** | `20` | refine ore into goods faster (compounding throughput) |
-| **cargo** | `21` | every one of your harvesters carries more per trip |
-| **fuel** | `22` | a bigger per-tick fuel budget for your code (capped) |
+Each command is a 16-byte record:
 
-You don't need to know the prices — the sim hands you `can_refine` / `can_cargo`
-/ `can_fuel` flags that are already true only when you can afford that tech's
-next level. A common opening: harvest a few loads, then start funnelling goods
-into `refine` so the rest of the game compounds. The trade-off is yours to
-program: pour into one tech, or spread across all three?
+```
+command (16 bytes): op:u8  _pad:u8  _pad:u16  target:u32  a:i32  b:i32
+```
+
+`target` is usually the id of the unit/building the order applies to. `a`/`b` are
+signed arguments whose meaning depends on the op:
+
+| op | command | target | a / b |
+|----|---------|--------|-------|
+| `0` | idle | — | — |
+| `1` | **harvest** | unit id | mine the ore under this unit into its cargo |
+| `2` | **move** | unit/convoy id | `a`=dx, `b`=dy — step one cell by the sign of each |
+| `3` | **transfer** | unit id | `a`=building id — dump cargo into that adjacent building |
+| `4` | **build** | — | `a`=building kind, `b`=packed coords `x*256 + y` (spends goods) |
+| `5` | **spawn** | — | `a`=unit kind — queue a unit at the spawner (spends goods, pop-capped) |
+| `7` | **launch** | — | load a convoy and run it to the market |
+| `8` | **defend** | convoy id | hold this cell; a defender wins any collision a mover causes |
+| `9` | **hunt** | convoy id | step toward the nearest rival convoy (advance if none) |
+
+Building kinds: `0` spawner · `1` refinery · `2` storage. Unit kinds: `0`
+harvester. (Op `6` `upgrade` is reserved in the wire format but not yet resolved
+by the sim.) Invalid placements, over-cap spawns, and commands aimed at units you
+don't own are rejected as no-ops — you don't have to be perfect, just intentful.
 
 ## Convoys & the contested market
 
-Goods aren't only for upgrades — you can **ship them to market** for credits,
-the headline score. When `can_launch` is 1 (you have enough goods for a
-shipment), returning `30` at base loads a **convoy** and sends it off.
+`launch` (op 7) loads goods onto a **convoy** and sends it off. By default a
+convoy auto-pilots: it leaves your base, enters the shared market, crosses it, and
+on arrival its shipment **sells for credits** — a premium over the goods you
+spent, the reward for the run. Your basic choice is **when** to ship vs. hoard,
+build, or grow.
 
-A convoy is auto-piloted: it leaves your base, enters the shared market room,
-crosses it to the market on its own, and on arrival its shipment sells for credits (a premium over the goods you spent — the
-reward for making the run). You don't steer it; the strategy is **when** to ship
-versus hoard or upgrade.
+The market is the **only contested ground**. When two players' convoys land on the
+same cell, one **seizes** the other's shipment — a deterministic ambush. You steer
+your *own* convoys (the ones with `owner == 0` in the market array) every tick:
 
-The market is the **only contested ground** (primer §1). When two players'
-convoys land on the same cell, one **seizes** the others' shipments — a
-deterministic ambush. Bases are never attacked; the stake of a fight is only the
-shipment in transit, never your progress. So the tension is timing: ship early
-and often, or build throughput first and run bigger, riskier convoys later.
+- **`hunt`** (op 9) — step toward the nearest rival convoy to set up a seizure.
+- **`defend`** (op 8) — hold this cell. A convoy that *defended* beats any convoy
+  that moves onto it, regardless of id. You trade your own delivery for the chance
+  to rob someone. (With no defender on a contested cell, the lowest id wins.)
+- **`move`** (op 2, targeting a convoy id) — steer it a cell yourself.
+- emit nothing for a convoy and it **auto-advances** to the market and banks.
 
-### Steering your convoys: the optional `convoy` export
-
-By default convoys auto-pilot straight to the market, and your only choice is
-*when* to launch. Export a second function, `convoy`, to control each of your
-convoys every tick and play the market tactically:
-
-```
-convoy(cargo, market_dx, market_dy, dist_market, tick,
-       enemy_dx, enemy_dy, enemy_dist, enemy_adjacent) -> code
-```
-
-| param | meaning |
-|-------|---------|
-| `cargo` | credits this convoy is carrying |
-| `market_dx`, `market_dy` | direction (−1/0/1) toward the market |
-| `dist_market` | Manhattan distance to the market |
-| `enemy_dx`, `enemy_dy` | direction toward the nearest enemy convoy (0/0 if none) |
-| `enemy_dist` | distance to the nearest enemy convoy (−1 if none) |
-| `enemy_adjacent` | 1 if an enemy convoy is within one cell |
-
-| code | stance |
-|------|--------|
-| `1` | **defend** — hold this cell; you win any collision a mover causes here |
-| `2` | **hunt** — step toward the nearest enemy convoy (advance if none) |
-| `10`–`13` | steer +x / −x / +y / −y |
-| anything else (incl. `0`) | advance toward the market (the default) |
-
-**The defend rule:** a convoy that *defended* beats any convoy that moved onto
-its cell, regardless of id. With no defender on a contested cell, the lowest id
-wins (as before). Defending means you don't advance — you trade your own
-delivery for the chance to rob someone. The export is optional: a bot without it
-leaves convoys on auto-pilot, fully compatible with the harvester-only ABI.
-
-See [`examples/raider.rs`](../examples/raider.rs) for an aggressive bot that
-hunts and ambushes rivals' convoys instead of cashing in its own.
+[`examples/raider.rs`](../examples/raider.rs) is a worked bot built entirely
+around this: it runs a lean economy and turns its convoys into hunters that seize
+rivals' shipments instead of cashing in its own.
 
 ## Persistent memory
 
-`decide` is called fresh each tick, but your module's **linear memory persists
-between ticks** — anything you keep in a `static`/global buffer is still there
-next tick. That's your scratch state (Screeps' `Memory`): remember a target, a
-mode, a tick counter, a map of where the good ore is.
+`tick` is called fresh each tick, but your module's **linear memory persists
+between ticks** — anything you keep in a `static`/global buffer is still there next
+tick. That's your scratch state (Screeps' `Memory`): remember a target, a mode, a
+tick counter, the last tick you shipped (to space convoys out so they don't bunch
+up and get ambushed together).
 
 ```rust
-static mut MODE: i32 = 0;          // survives across ticks
+static mut LAST_SHIP: u32 = 0;     // survives across ticks
 
-#[no_mangle]
-pub extern "C" fn decide(/* … */) -> i32 {
-    unsafe {
-        MODE = (MODE + 1) % 3;     // evolves tick to tick
-        // … branch on MODE …
-    }
-    4
-}
+// inside tick(): read the current tick from the view header, compare to
+// LAST_SHIP, and only launch when enough ticks have passed.
 ```
 
-It also survives a **freeze/thaw** — a deploy or a stop/resume re-instantiates
-your module, and the engine restores the first 64 KB of your linear memory (a
-hard cap), so your state carries across and replays stay bit-identical. Two
-caveats:
+It also survives a **freeze/thaw** — a deploy or stop/resume re-instantiates your
+module, and the engine restores a capped slice of your linear memory, so your
+state carries across and replays stay bit-identical. Two caveats:
 
 - Persistence across freeze/thaw needs your module to **export its memory**.
   Rust (`cdylib`) and AssemblyScript (`--runtime stub`) do by default; for
-  Zig / C / TinyGo you may need an `--export-memory` linker flag (live
-  tick-to-tick memory works regardless).
+  Zig / C / TinyGo the export-memory behaviour comes from the freestanding
+  targets below (live tick-to-tick memory works regardless).
 - It's deterministic and untrusted: keep state in **linear memory**, not in
-  mutable wasm globals (those aren't snapshotted). In Rust a plain `static mut`
-  scalar can be promoted to a global under `-O` — use a `static mut [i32; N]`
-  with `read_volatile`/`write_volatile` (see `examples/strategist.rs`). In
-  AssemblyScript, arrays import `env.abort` (which the sandbox rejects); use a
-  `memory.data(n)` buffer with raw `load`/`store` (see `examples/strategist.ts`).
-
-Worked examples that use Memory to play the full game well —
-[`examples/strategist.rs`](../examples/strategist.rs) and
-[`examples/strategist.ts`](../examples/strategist.ts) — remember the tick they
-last shipped, so they can space convoys out on a cooldown (bunched convoys get
-ambushed at the market).
+  mutable wasm globals (those aren't snapshotted). In Rust, prefer a
+  `static mut [T; N]` accessed via `read_volatile`/`write_volatile` (a plain
+  `static mut` scalar can be promoted to a global under `-O`). The engine glue in
+  [`examples/colony.rs`](../examples/colony.rs) already reads/writes the IN/OUT
+  buffers this way.
 
 ## Running your bot
 
-There are two surfaces, and the right path depends on which you're using.
+There are two surfaces; the right path depends on which you're using.
 
 ### Local dev (`mix convoy.run`)
 
-If you've cloned the repo and have the toolchains installed, the CLI compiles
-and runs in one step — and `--watch` re-runs on every save:
+If you've cloned the repo and have the toolchains installed, the CLI compiles and
+runs in one step — and `--watch` re-runs on every save:
 
 ```bash
 mix phx.server                                   # terminal 1
-mix convoy.run examples/harvester.rs --watch     # terminal 2, then open the browser
+mix convoy.run examples/colony.rs --watch        # terminal 2, then open the browser
 ```
 
-The language is inferred from the file extension (`.rs .go .ts .wat
-.wasm`). Add `--player NAME --region arena` to join a shared world. See the
-[README](../README.md#local-dev-workflow-write-code-in-your-editor-watch-it-in-the-sim).
+The language is inferred from the file extension (`.rs .go .ts .zig .c .wat
+.wasm`). Add `--player NAME --region arena` to join a shared world:
+
+```bash
+mix convoy.run alice.rs --region arena --player alice
+mix convoy.run bob.rs   --region arena --player bob
+```
 
 ### The hosted instance: ship us your source
 
-The hosted instance compiles **server-side** — just send us the file.
+The hosted instance compiles **server-side** — just send the file.
 
 **curl it** (the request body *is* the source):
 
@@ -212,18 +204,25 @@ curl --data-binary @bot.rs -H 'Content-Type: application/octet-stream' \
 
 - `region` is in the path (`arena` above); `player` and `lang` are query params.
 - Drop `lang` if you pass `?file=bot.rs` — the language is inferred from the
-  extension (`.rs .go .ts .wat .wasm`).
+  extension.
 - Already have a compiled module? `lang=wasm` and the binary is the body:
-  `curl --data-binary @bot.wasm ...?player=bob&lang=wasm`.
+  `curl --data-binary @bot.wasm '...?player=bob&lang=wasm'`.
 
-Rust / Go / AssemblyScript / Zig / C are compiled by an isolated builder
-service (no secrets, no network egress); WAT compiles in-process. The
-response is JSON: `{"status":"ok","player":"bob","backend":"wasm",...}`.
+Rust / Go / AssemblyScript / Zig / C are compiled by an isolated builder service
+(no secrets, no network egress); WAT compiles in-process. The response is JSON:
+`{"status":"ok","player":"bob","backend":"wasm",...}`.
 
-**In the browser:** pick your language, paste source (or **Upload .wasm**), set a
-player name, and Run.
+**In the browser:** the spectator page at `/` has a getting-started panel with a
+per-language starter template, the curl/CLI commands, and a command reference, plus
+an upload form (pick a file, set a player name, Submit) and an example-bot library
+you can read and one-click field.
 
 ## Language support
+
+Anything that compiles to a small, **zero-import** WASM module exporting
+`inbuf`/`outbuf`/`tick` works. Each language has a starter template on the `/`
+getting-started panel; the fully-worked Rust reference is
+[`examples/colony.rs`](../examples/colony.rs).
 
 | Language | Fit | How |
 |----------|-----|-----|
@@ -234,103 +233,82 @@ player name, and Run.
 | **C** | ✅ | `clang --target=wasm32 -nostdlib`, zero imports |
 | **WAT** | ✅ (no toolchain) | Wasmtime compiles the text directly |
 | Plain JavaScript | ❌ | needs an embedded JS engine — see below |
-| Ruby | ❌ | same — `ruby.wasm` is a whole VM |
-| Python | ❌ | same — CPython-on-WASI is a whole VM |
+| Ruby / Python | ❌ | same — `ruby.wasm` / CPython-on-WASI is a whole VM |
 
-### Rust
+In local dev, `mix convoy.run bot.<ext>` runs the matching command for you. The
+hosted builder runs the same commands. To compile by hand:
 
-Install the target once: `rustup target add wasm32-unknown-unknown`.
-
-Starter: [`examples/harvester.rs`](../examples/harvester.rs). Compile:
+**Rust** — `rustup target add wasm32-unknown-unknown` once, then:
 
 ```bash
 rustc --target wasm32-unknown-unknown -O --crate-type cdylib -o bot.wasm bot.rs
 ```
 
-`#![no_std]` + `#[no_mangle] pub extern "C" fn decide(...)` keeps it import-free.
-In local dev, `mix convoy.run bot.rs` does the compile for you.
+`#![no_std]` + `#[no_mangle] pub extern "C" fn tick/inbuf/outbuf` keeps it
+import-free.
 
-### Go (TinyGo)
-
-Install: `brew install tinygo-org/tools/tinygo` (pulls LLVM). Plain `go build`
-won't work — you need TinyGo's freestanding **`wasm-unknown`** target so the
-module has no WASI/JS imports.
-
-Starter: [`examples/harvester.go`](../examples/harvester.go). Compile:
+**Go (TinyGo)** — `brew install tinygo-org/tools/tinygo` (pulls LLVM). Plain
+`go build` won't work; you need the freestanding `wasm-unknown` target:
 
 ```bash
-tinygo build -target=wasm-unknown -scheduler=none -gc=leaking -no-debug -o bot.wasm bot.go
+tinygo build -o bot.wasm -target=wasm-unknown -scheduler=none -gc=leaking -no-debug bot.go
 ```
 
-Export with `//export decide`; keep a `func main() {}`. In local dev,
-`mix convoy.run bot.go` runs the same command.
+Export with `//export tick` (and `inbuf`/`outbuf`); keep a `func main() {}`.
 
-### AssemblyScript (the JavaScript/TypeScript path)
-
-AssemblyScript is a TypeScript-like language that compiles straight to WASM —
-the closest thing to "write your bot in JS." Install: `npm i -g assemblyscript`
-(or `npx asc`).
-
-Starter: [`examples/harvester.ts`](../examples/harvester.ts). Compile:
+**AssemblyScript** — TypeScript-like, the closest thing to "write your bot in JS."
+`npm i -g assemblyscript` (or `npx asc`):
 
 ```bash
 asc bot.ts -o bot.wasm --runtime stub --optimize
 ```
 
-`--runtime stub` is what drops the runtime imports so the module instantiates.
-In local dev, `mix convoy.run bot.ts` does this for you.
+`--runtime stub` drops the runtime imports so the module instantiates.
 
-### Zig
-
-Install: `brew install zig` (or grab a build from
-[ziglang.org/download](https://ziglang.org/download)).
-
-Starter: [`examples/harvester.zig`](../examples/harvester.zig). Compile:
+**Zig** — `brew install zig` (or a build from
+[ziglang.org/download](https://ziglang.org/download)):
 
 ```bash
 zig build-exe bot.zig -target wasm32-freestanding -O ReleaseSmall \
   -fno-entry -rdynamic -femit-bin=bot.wasm
 ```
 
-`export fn decide(...)` gives the C ABI; `-fno-entry` drops the `_start`
-entry point and `wasm32-freestanding` keeps it import-free. In local dev,
-`mix convoy.run bot.zig` runs the same command.
+`export fn tick(...)` gives the C ABI; `-fno-entry` drops `_start` and
+`wasm32-freestanding` keeps it import-free.
 
-### C
-
-Install an LLVM toolchain with the wasm linker: `brew install llvm` (gives you a
-wasm-capable `clang` plus `wasm-ld`). Apple's stock clang can't link wasm.
-
-Starter: [`examples/harvester.c`](../examples/harvester.c). Compile:
+**C** — `brew install llvm` for a wasm-capable `clang` + `wasm-ld` (Apple's stock
+clang can't link wasm):
 
 ```bash
-clang --target=wasm32 -O3 -nostdlib -Wl,--no-entry -Wl,--export=decide \
-  -o bot.wasm bot.c
+clang --target=wasm32 -O3 -nostdlib -Wl,--no-entry \
+  -Wl,--export=inbuf -Wl,--export=outbuf -Wl,--export=tick -o bot.wasm bot.c
 ```
 
-`-nostdlib -Wl,--no-entry` drops libc and the entry point; `-Wl,--export=decide`
-keeps and exports the one function. A pure-arithmetic `decide` has no imports. In
-local dev, `mix convoy.run bot.c` does this for you.
+**WAT** — no toolchain; Wasmtime compiles the text directly. Submit it as
+`?lang=wat`, or `wat2wasm bot.wat` (from
+[wabt](https://github.com/WebAssembly/wabt)) and upload the `.wasm`.
 
-### WAT (WebAssembly text)
+## Example bots
 
-No toolchain — Wasmtime compiles the text directly. Great for learning the ABI.
-See the WAT example in the page's language tabs and submit it like any other
-file (`?lang=wat`), or compile to a binary with `wat2wasm bot.wat` (from
-[wabt](https://github.com/WebAssembly/wabt)) and upload that.
+All four live in [`examples/`](../examples) and run the same loop with different
+strategies — read them, then field one from the `/` page:
 
-### Why not plain JS, Ruby, or Python?
+- [`colony.rs`](../examples/colony.rs) — the **reference** bot. Balanced: builds up
+  to two refineries before shipping, then runs convoys while growing the fleet.
+  Start here; the engine glue is clearly separated from the colony logic you edit.
+- [`colony_shipper.rs`](../examples/colony_shipper.rs) — one refinery, then ships
+  aggressively to flood the market with cheap early convoys.
+- [`colony_builder.rs`](../examples/colony_builder.rs) — stacks three refineries
+  before shipping; slow to start, dominant on throughput late.
+- [`raider.rs`](../examples/raider.rs) — runs a lean economy and steers its convoys
+  to `hunt`/`defend`, seizing rivals' shipments instead of banking its own.
 
-These don't compile to a small, zero-import `decide` function. To run them you'd
-have to ship an entire language interpreter compiled to WASM (QuickJS, `ruby.wasm`,
-CPython-on-WASI) and run your source as *data* inside it. That:
+## Why not plain JS, Ruby, or Python?
 
-- pulls in WASI imports (filesystem, clock, stdio) the sandbox doesn't provide,
-- is megabytes of VM per bot, and
-- burns most of the fuel budget booting the interpreter, not playing.
-
-It doesn't fit the pure-function, fuel-metered model. If you want a
-dynamic/scripting feel, use **AssemblyScript** — it reads like TypeScript and
-compiles to a tiny clean module. (A future "scripting tier" with an embedded
-interpreter could change this, but it's not built.)
-```
+These don't compile to a small, zero-import module. To run them you'd ship an
+entire language interpreter compiled to WASM (QuickJS, `ruby.wasm`,
+CPython-on-WASI) and run your source as *data* inside it. That pulls in WASI
+imports the sandbox doesn't provide, is megabytes of VM per bot, and burns most of
+the fuel budget booting the interpreter instead of playing. If you want a
+scripting feel, use **AssemblyScript** — it reads like TypeScript and compiles to a
+tiny, clean module.
