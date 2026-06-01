@@ -70,6 +70,17 @@ defmodule Convoy.Examples do
       tagline: "Raider counter (PvP)",
       blurb:
         "The answer to the Raider. Runs a real shipping economy, but flips each convoy to DEFEND the instant a hunter is about to intercept — defend beats hunt, so the raid is dodged and the hunter's haul is seized. Immune to theft and out-ships a bot that lives on it. Field it against a Raider and watch the ambush backfire."
+    },
+    %{
+      id: "magnate",
+      name: "Magnate",
+      file: "magnate.rs",
+      lang: :rust,
+      ext: "rs",
+      seeded?: false,
+      tagline: "Economy + raid (PvP)",
+      blurb:
+        "A robber baron: builds the biggest economy the rules allow, then raids with the surplus. Places refineries right on the ore so the 4-harvester cap hauls almost nothing, fills the cap, and launches every spare 20 goods — then steers those convoys with the Raider's diagonal intercept to rob rivals on the way to market. Tops both throughput and seizes; field it to dominate a crowded board."
     }
   ]
 
