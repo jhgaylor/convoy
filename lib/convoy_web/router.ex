@@ -27,6 +27,8 @@ defmodule ConvoyWeb.Router do
 
     # Push player code into a region from outside the browser (the convoy.run CLI).
     post "/region/:id/program", RegionController, :load
+    # Same, but the raw request body is the source/`.wasm` (easy `curl @file`).
+    post "/region/:id/upload", RegionController, :upload
   end
 
   # Enable LiveDashboard in development

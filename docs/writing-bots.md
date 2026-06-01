@@ -70,16 +70,27 @@ The language is inferred from the file extension (`.rs .go .ts .wat .rules
 
 ### The hosted instance: ship us your source
 
-The hosted instance compiles **server-side**: pick your language in the editor,
-paste your source, set a player name, and Run. Rust / Go / AssemblyScript are
-compiled by an isolated builder service (no secrets, no network egress) and the
-resulting `.wasm` runs in the sim. WAT and the Rules DSL compile in-process.
+The hosted instance compiles **server-side** — just send us the file.
 
-Prefer to compile yourself? The universal fallback works anywhere, in any
-language that targets WASM:
+**curl it** (the request body *is* the source):
 
-1. Compile your bot to a `.wasm` **locally** (commands per language below).
-2. In the browser, pick **Upload .wasm**, set your player name, **Upload & Run**.
+```bash
+curl --data-binary @bot.rs -H 'Content-Type: application/octet-stream' \
+  'https://convoy.inevitable.fyi/api/region/arena/upload?player=bob&lang=rust'
+```
+
+- `region` is in the path (`arena` above); `player` and `lang` are query params.
+- Drop `lang` if you pass `?file=bot.rs` — the language is inferred from the
+  extension (`.rs .go .ts .wat .wasm .rules`).
+- Already have a compiled module? `lang=wasm` and the binary is the body:
+  `curl --data-binary @bot.wasm ...?player=bob&lang=wasm`.
+
+Rust / Go / AssemblyScript are compiled by an isolated builder service (no
+secrets, no network egress); WAT and the Rules DSL compile in-process. The
+response is JSON: `{"status":"ok","player":"bob","backend":"wasm",...}`.
+
+**In the browser:** pick your language, paste source (or **Upload .wasm**), set a
+player name, and Run.
 
 ## Language support
 

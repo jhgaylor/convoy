@@ -81,6 +81,9 @@ Key flags: `--region NAME` (default `dev`), `--player NAME`, `--server URL`,
 `--headless`, `--ticks N`, `--seed N`, `--watch`, `--lang LANG`. Full help:
 `mix help convoy.run`. Under the hood the CLI POSTs to
 `POST /api/region/:id/program`, so anything that speaks HTTP can drive a region.
+Or just curl a file — the body is the source:
+`curl --data-binary @bot.rs -H 'Content-Type: application/octet-stream' '…/api/region/arena/upload?player=bob&lang=rust'`
+(see [docs/writing-bots.md](docs/writing-bots.md)).
 
 ## Writing a bot
 

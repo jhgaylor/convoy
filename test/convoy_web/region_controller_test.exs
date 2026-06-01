@@ -3,6 +3,40 @@ defmodule ConvoyWeb.RegionControllerTest do
 
   alias Convoy.Engine
 
+  test "upload: raw body with ?lang compiles and loads the player", %{conn: conn} do
+    id = "up-#{System.unique_integer([:positive])}"
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/octet-stream")
+      |> post("/api/region/#{id}/upload?player=bob&lang=rules", "otherwise to_resource")
+
+    assert %{"status" => "ok", "player" => "bob", "backend" => "rules"} = json_response(conn, 200)
+    assert "bob" in Map.keys(Engine.snapshot(id).scores)
+  end
+
+  test "upload: language inferred from ?file extension", %{conn: conn} do
+    id = "up-#{System.unique_integer([:positive])}"
+    wat = "(module (func (export \"decide\") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 4)))"
+
+    conn =
+      conn
+      |> put_req_header("content-type", "application/octet-stream")
+      |> post("/api/region/#{id}/upload?player=p&file=bot.wat", wat)
+
+    assert %{"status" => "ok", "backend" => "wasm"} = json_response(conn, 200)
+  end
+
+  test "upload: missing language is a clear 422", %{conn: conn} do
+    conn =
+      conn
+      |> put_req_header("content-type", "application/octet-stream")
+      |> post("/api/region/up-x/upload", "otherwise idle")
+
+    assert %{"status" => "error", "message" => msg} = json_response(conn, 422)
+    assert msg =~ "lang"
+  end
+
   test "POST loads a rules program and starts the region", %{conn: conn} do
     id = "test-#{System.unique_integer([:positive])}"
 
