@@ -16,8 +16,10 @@ mix setup        # deps + assets (already done if you scaffolded)
 mix phx.server   # http://localhost:4000
 ```
 
-Then open the page, edit the harvester program on the left, press **Run**, and
-watch your agents harvest ore and deliver it to base on the grid.
+The page is a **spectator**: it shows the shared world and a "Submit a bot"
+guide (language tabs + a file upload). You join by sending a bot — `curl` a
+file, `mix convoy.run`, the HTTP API, or the in-page upload — and watch the
+harvesters compete on the grid. There's no in-browser editor.
 
 **World overview** at `/admin`: every simulation at a glance — running ones
 with live system + per-sim utilization (BEAM scheduler %, VM memory, process
@@ -59,8 +61,8 @@ Open `http://localhost:4000/?region=arena` to watch the scoreboard and the
 colour-coded harvesters compete for ore. The shared world arbitrates conflicts
 authoritatively (resolved in entity-id order, single-writer), so two players
 reaching for the last ore in a cell is decided fairly and deterministically.
-The browser is a **spectator** — it never auto-joins. You join by submitting
-code: set the editor's "play as" name and Run, or `mix convoy.run --player NAME`.
+The browser is a **spectator** — it never auto-joins. You join by submitting a
+bot: the page's upload, `mix convoy.run --player NAME`, or a `curl` to `/upload`.
 
 Prefer the terminal? `--headless` runs the sim in-process and renders ASCII —
 no server, no browser, the fastest loop:
@@ -100,15 +102,16 @@ the doc explains why; use AssemblyScript for a scripting feel).
 | Primer concept | Where it lives |
 |---|---|
 | **Deterministic tick loop** (§6): snapshot → run code → intents → validate → resolve in entity-id order → apply → commit | `Convoy.Engine.Sim` — pure functions (`tick/2`, `collect_intents/2`, `apply_intents/2`) |
-| **Intents, never mutations** (§3): player code returns declarative intents; the sim owns all state change | both backends return intents; `Sim` resolves them authoritatively |
+| **Intents, never mutations** (§3): player code returns declarative intents; the sim owns all state change | the WASM `decide` returns an intent code; `Sim` resolves them authoritatively |
 | **WASM execution tier + fuel metering** (§7): untrusted code in Wasmtime, instruction-counted budget, zero ambient authority | `Convoy.Engine.Wasm` via `wasmex`; per-entity fuel budget, traps contained |
 | **Player language story** (§7): bring Rust/Go/AssemblyScript/C, or an easy SDK | `Convoy.Compile` (in-game single-file compile) + `.wasm` upload; templates per language |
-| **Seeded determinism / free replays** (§6, §11): same seed + same program → bit-identical result | `World.generate/1` (LCG), `:erlang.phash2` for `wander`; proven for *both* backends in tests |
+| **Seeded determinism / free replays** (§6, §11): same seed + same program → bit-identical result | `World.generate/1` (LCG), `:erlang.phash2` for `wander`; proven in tests |
 | **Region = single-writer process** (§4, §9) advancing autonomously | `Convoy.Engine.Region` GenServer; ticks on a timer, owns the WASM instance |
 | **Region registry / scale-to-zero** (§10): regions started on demand, located by id | `Registry` + `DynamicSupervisor` in `application.ex`; `Convoy.Engine.ensure_region/2` |
 | **Snapshot persistence / freeze-thaw** (§8, §11): a region resumes at the tick it stopped across a restart/deploy | `Convoy.Persistence` (file-backed snapshots) + `Region` restore-on-init + `Engine.restore_all/0` on boot |
-| **Local dev loop**: author in your editor, watch in the sim | `mix convoy.run` + `POST /api/region/:id/program` + named regions (`/?region=NAME`) |
-| **Ops/overview**: every running sim + utilization, stop/delete | `ConvoyWeb.AdminLive` (`/admin`) + `Engine.list_regions/0`, `region_stats/1`, `stop_region/1`, `delete_region/1` |
+| **Local dev loop**: edit a file, watch in the sim | `mix convoy.run` + `POST /api/region/:id/program` (or `/upload`) + named regions (`/?region=NAME`) |
+| **Ops/overview**: every running sim + utilization, stop/delete/kick | `ConvoyWeb.AdminLive` (`/admin`) + `Engine.list_regions/0`, `region_stats/1`, `stop_region/1`, `delete_region/1`, `kick_player/2` |
+| **Route a session to its region** (§9) | `ConvoyWeb.SimLive` (spectator) subscribes over PubSub; submits go through `Convoy.Loader` → `Engine.submit_player/5` |
 
 ## Persistence (surviving deploys)
 
@@ -129,7 +132,6 @@ rather than crashing).
 
 The browser is a spectator: opening a region never creates a player, and an
 empty region just shows the map until someone submits.
-| **Route a session to its region** (§9) | `ConvoyWeb.SimLive` subscribes over PubSub and sends commands |
 
 ## Bringing your own code
 
@@ -217,9 +219,9 @@ program and owns a set of harvesters; the tick loop runs each entity's *owner's*
 program, then resolves all intents in entity-id order (single-writer), so
 competition for ore is arbitrated fairly and deterministically. Scoring is
 per-player (`World.scores`). The browser only spectates until you submit; you
-join as a named player via the editor's "play as" field or `mix convoy.run
---player NAME` / the HTTP API. Players, their programs, and
-scores are all part of the persisted snapshot, so a shared game survives deploys.
+join as a named player via the page's upload, `mix convoy.run --player NAME`,
+or the HTTP API. Players, their programs, and scores are all part of the
+persisted snapshot, so a shared game survives deploys.
 
 ## Not yet built (next milestones, per the primer)
 
@@ -243,10 +245,11 @@ off the grid (the anti-cheat foundation).
 tier: constrained instantiation (and rejection of modules missing `decide` or
 with invalid WAT), deterministic fuel consumption, infinite-loop containment
 (trap → idle, BEAM survives), bit-identical wasm-driven replay, and that the
-default WAT harvester delivers ore *identically* to the equivalent rule program.
+default WAT harvester delivers ore *identically* to a reference Elixir decider
+(`test/support/bots.ex`).
 
 `test/convoy/compile_test.exs` covers the compile pipeline: WAT passthrough,
-per-language templates, and that an AssemblyScript / Rust module compiled from
-its template delivers ore *identically* to the rule program (ABI correctness,
-end to end). Tests for a language whose toolchain isn't installed self-skip, so
+per-language templates, and that an AssemblyScript / Rust / TinyGo module
+compiled from its template delivers ore *identically* to the reference decider
+(ABI correctness, end to end). Tests for a language whose toolchain isn't installed self-skip, so
 the suite stays portable.

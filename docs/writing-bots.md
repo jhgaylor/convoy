@@ -99,7 +99,7 @@ player name, and Run.
 | **Rust** | ✅ first-class | `wasm32-unknown-unknown`, zero imports |
 | **Go (TinyGo)** | ✅ | `wasm-unknown` target, zero imports |
 | **AssemblyScript** | ✅ (the "JS/TS" path) | `asc --runtime stub`, zero imports |
-| **WAT** | ✅ (no toolchain) | paste it in the editor |
+| **WAT** | ✅ (no toolchain) | Wasmtime compiles the text directly |
 | Plain JavaScript | ❌ | needs an embedded JS engine — see below |
 | Ruby | ❌ | same — `ruby.wasm` is a whole VM |
 | Python | ❌ | same — CPython-on-WASI is a whole VM |
@@ -149,10 +149,10 @@ In local dev, `mix convoy.run bot.ts` does this for you.
 
 ### WAT (WebAssembly text)
 
-No toolchain, no compile step — paste it into the editor and Run. Great for
-learning the ABI. See the default WASM program in the editor, or compile to a
-binary with `wat2wasm bot.wat` (from [wabt](https://github.com/WebAssembly/wabt))
-if you'd rather upload.
+No toolchain — Wasmtime compiles the text directly. Great for learning the ABI.
+See the WAT example in the page's language tabs and submit it like any other
+file (`?lang=wat`), or compile to a binary with `wat2wasm bot.wat` (from
+[wabt](https://github.com/WebAssembly/wabt)) and upload that.
 
 ### Why not plain JS, Ruby, or Python?
 
