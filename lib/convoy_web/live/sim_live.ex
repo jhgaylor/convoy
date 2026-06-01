@@ -19,6 +19,8 @@ defmodule ConvoyWeb.SimLive do
     ".rs" => :rust,
     ".go" => :tinygo,
     ".ts" => :assemblyscript,
+    ".zig" => :zig,
+    ".c" => :c,
     ".wat" => :wat,
     ".wasm" => :wasm
   }
@@ -166,6 +168,8 @@ defmodule ConvoyWeb.SimLive do
       %{id: :rust, label: "Rust", ext: "rs", lang: "rust", toolchain?: true, code: Compile.template(:rust)},
       %{id: :tinygo, label: "Go", ext: "go", lang: "tinygo", toolchain?: true, code: Compile.template(:tinygo)},
       %{id: :assemblyscript, label: "AssemblyScript", ext: "ts", lang: "assemblyscript", toolchain?: true, code: Compile.template(:assemblyscript)},
+      %{id: :zig, label: "Zig", ext: "zig", lang: "zig", toolchain?: true, code: Compile.template(:zig)},
+      %{id: :c, label: "C", ext: "c", lang: "c", toolchain?: true, code: Compile.template(:c)},
       %{id: :wat, label: "WAT", ext: "wat", lang: "wat", toolchain?: false, code: Wasm.default_source()}
     ]
   end

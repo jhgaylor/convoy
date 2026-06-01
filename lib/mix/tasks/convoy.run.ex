@@ -209,6 +209,8 @@ defmodule Mix.Tasks.Convoy.Run do
       ".rs" -> :rust
       ".ts" -> :assemblyscript
       ".go" -> :tinygo
+      ".zig" -> :zig
+      ".c" -> :c
       ".wasm" -> :wasm
       other -> abort("can't infer language from '#{other}' — pass --lang")
     end

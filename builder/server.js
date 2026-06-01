@@ -1,6 +1,6 @@
 // Convoy builder: a tiny, isolated compile service.
 //
-// POST /compile  {"language": "rust"|"tinygo"|"assemblyscript", "source": "..."}
+// POST /compile  {"language": "rust"|"tinygo"|"assemblyscript"|"zig"|"c", "source": "..."}
 //   -> 200 application/wasm  (the compiled module bytes)
 //   -> 422 text/plain        (compiler error message)
 // GET  /healthz -> 200
@@ -40,6 +40,39 @@ const LANGS = {
     ext: "ts",
     cmd: "asc",
     args: (i, o) => [i, "-o", o, "--runtime", "stub", "--optimize"],
+  },
+  zig: {
+    ext: "zig",
+    cmd: "zig",
+    args: (i, o) => [
+      "build-exe",
+      i,
+      "-target",
+      "wasm32-freestanding",
+      "-O",
+      "ReleaseSmall",
+      "-fno-entry",
+      "-rdynamic",
+      `-femit-bin=${o}`,
+      "--cache-dir",
+      `${path.dirname(o)}/zig-cache`,
+      "--global-cache-dir",
+      `${path.dirname(o)}/zig-global-cache`,
+    ],
+  },
+  c: {
+    ext: "c",
+    cmd: "clang",
+    args: (i, o) => [
+      "--target=wasm32",
+      "-O3",
+      "-nostdlib",
+      "-Wl,--no-entry",
+      "-Wl,--export=decide",
+      "-o",
+      o,
+      i,
+    ],
   },
 };
 

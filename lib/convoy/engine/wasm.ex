@@ -69,7 +69,7 @@ defmodule Convoy.Engine.Wasm do
 
   @default_wat """
   ;; Default harvester — the rule-DSL behaviour, written in WebAssembly.
-  ;; Compile your own (Rust, TinyGo, AssemblyScript, or WAT) to a `decide`
+  ;; Compile your own (Rust, TinyGo, AssemblyScript, Zig, C, or WAT) to a `decide`
   ;; export with the ABI in the docs, and it runs under the same fuel budget.
   (module
     (func (export "decide")

@@ -5,12 +5,15 @@ FROM debian:trixie-slim
 
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:/usr/local/tinygo/bin:/usr/local/go/bin:$PATH \
+    PATH=/usr/local/cargo/bin:/usr/local/zig:/usr/local/tinygo/bin:/usr/local/go/bin:$PATH \
     TINYGO_VERSION=0.41.1 \
-    GO_VERSION=1.25.6
+    GO_VERSION=1.25.6 \
+    ZIG_VERSION=0.13.0
 
+# clang + lld give us the C path (clang drives wasm-ld from lld). xz-utils
+# unpacks the Zig tarball.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl xz-utils nodejs npm \
+  && apt-get install -y --no-install-recommends ca-certificates curl xz-utils nodejs npm clang lld \
   && rm -rf /var/lib/apt/lists/*
 
 # Go (TinyGo needs a host Go toolchain).
@@ -26,6 +29,11 @@ RUN curl -fsSL "https://github.com/tinygo-org/tinygo/releases/download/v${TINYGO
 RUN curl --proto '=https' --tlsv1.2 -fsSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable \
   && rustup target add wasm32-unknown-unknown \
   && chmod -R a+rX /usr/local/rustup /usr/local/cargo
+
+# Zig (self-contained release; bundles its own clang/LLVM for wasm-freestanding).
+RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-aarch64-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz \
+  && mkdir -p /usr/local/zig \
+  && tar -C /usr/local/zig --strip-components=1 -xJf /tmp/zig.tar.xz && rm /tmp/zig.tar.xz
 
 # AssemblyScript compiler (asc).
 RUN npm install -g assemblyscript@0.28.17

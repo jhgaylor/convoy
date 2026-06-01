@@ -93,7 +93,8 @@ New here? **[docs/writing-bots.md](docs/writing-bots.md)** is the getting-starte
 guide: the `decide` ABI, how to run a bot (locally or by uploading a `.wasm`),
 and per-language setup. Bots compile to a zero-import WASM module exporting
 `decide`. First-class languages: **Rust**, **Go (TinyGo)**, **AssemblyScript**
-(the JS/TS path), and **WAT**. Starters live in [`examples/`](examples/). Plain
+(the JS/TS path), **Zig**, **C**, and **WAT**. Starters live in
+[`examples/`](examples/). Plain
 JS, Ruby, and Python aren't supported (they'd need a whole interpreter in WASM —
 the doc explains why; use AssemblyScript for a scripting feel).
 
@@ -145,7 +146,9 @@ a finished `.wasm`:
 | **Rust** | Compiled, single-file, via `rustc --target wasm32-unknown-unknown`. |
 | **Go (TinyGo)** | Compiled via `tinygo build -target=wasm-unknown`. |
 | **AssemblyScript** | Compiled by the pure-JS `asc` compiler (the JS/TS path). |
-| **Upload .wasm** | Bring a precompiled module from *any* language (C/Zig/…). |
+| **Zig** | Compiled via `zig build-exe -target wasm32-freestanding`. |
+| **C** | Compiled via `clang --target=wasm32 -nostdlib`. |
+| **Upload .wasm** | Bring a precompiled module from *any* language. |
 
 See [docs/writing-bots.md](docs/writing-bots.md) for the `decide` ABI and
 per-language getting-started.
@@ -175,10 +178,14 @@ hint and suggests compiling locally + uploading the `.wasm` instead.
 - **AssemblyScript**: `cd priv/asc && npm install assemblyscript` (bundled here).
 - **Rust**: `curl https://sh.rustup.rs -sSf | sh` then `rustup target add wasm32-unknown-unknown`.
 - **TinyGo**: `brew install tinygo`.
+- **Zig**: `brew install zig`.
+- **C**: `brew install llvm` (a wasm-capable clang + `wasm-ld`; Apple's stock clang won't link wasm).
 - **Upload** needs nothing server-side — compile wherever you like:
   - Rust: `rustc --target wasm32-unknown-unknown -O --crate-type cdylib -o bot.wasm bot.rs`
   - TinyGo: `tinygo build -o bot.wasm -target=wasm bot.go`
   - AssemblyScript: `asc bot.ts -o bot.wasm --runtime stub --optimize`
+  - Zig: `zig build-exe bot.zig -target wasm32-freestanding -O ReleaseSmall -fno-entry -rdynamic -femit-bin=bot.wasm`
+  - C: `clang --target=wasm32 -O3 -nostdlib -Wl,--no-entry -Wl,--export=decide -o bot.wasm bot.c`
 
 ### The WASM ABI
 
@@ -249,7 +256,7 @@ default WAT harvester delivers ore *identically* to a reference Elixir decider
 (`test/support/bots.ex`).
 
 `test/convoy/compile_test.exs` covers the compile pipeline: WAT passthrough,
-per-language templates, and that an AssemblyScript / Rust / TinyGo module
-compiled from its template delivers ore *identically* to the reference decider
+per-language templates, and that an AssemblyScript / Rust / TinyGo / Zig / C
+module compiled from its template delivers ore *identically* to the reference decider
 (ABI correctness, end to end). Tests for a language whose toolchain isn't installed self-skip, so
 the suite stays portable.

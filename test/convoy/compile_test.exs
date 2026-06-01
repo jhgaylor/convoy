@@ -33,7 +33,7 @@ defmodule Convoy.CompileTest do
   end
 
   test "every language ships a template that mentions decide" do
-    for lang <- [:assemblyscript, :rust, :tinygo] do
+    for lang <- [:assemblyscript, :rust, :tinygo, :zig, :c] do
       assert Compile.template(lang) =~ "decide"
     end
   end
@@ -94,6 +94,48 @@ defmodule Convoy.CompileTest do
     end
   end
 
+  describe "Zig" do
+    @describetag :zig
+
+    test "compiles the template to a zero-import wasm32-freestanding module matching the rules" do
+      if Compile.available?(:zig) do
+        assert {:ok, bytes} = Compile.to_wasm(:zig, Compile.template(:zig))
+        # An empty import set on instantiation proves wasm32-freestanding pulled
+        # in no host imports.
+        assert_parity_with_rules(bytes)
+      else
+        IO.puts("[skip] Zig toolchain not installed")
+      end
+    end
+
+    test "a compile error returns a message, not a crash" do
+      if Compile.available?(:zig) do
+        assert {:error, msg} = Compile.to_wasm(:zig, "export fn decide() i32 { not zig }")
+        assert is_binary(msg) and msg != ""
+      end
+    end
+  end
+
+  describe "C" do
+    @describetag :c
+
+    test "compiles the template single-file to wasm32 and matches the rules" do
+      if Compile.available?(:c) do
+        assert {:ok, bytes} = Compile.to_wasm(:c, Compile.template(:c))
+        assert_parity_with_rules(bytes)
+      else
+        IO.puts("[skip] C toolchain (clang + wasm-ld) not installed")
+      end
+    end
+
+    test "a compile error returns a message, not a crash" do
+      if Compile.available?(:c) do
+        assert {:error, msg} = Compile.to_wasm(:c, "int decide( this is not c")
+        assert is_binary(msg)
+      end
+    end
+  end
+
   describe "remote builder routing" do
     setup do
       on_exit(fn -> System.delete_env("CONVOY_BUILDER_URL") end)
@@ -101,7 +143,7 @@ defmodule Convoy.CompileTest do
 
     test "compiled languages report available when a builder is configured" do
       System.put_env("CONVOY_BUILDER_URL", "http://localhost:1")
-      for lang <- [:rust, :tinygo, :assemblyscript], do: assert Compile.available?(lang)
+      for lang <- [:rust, :tinygo, :assemblyscript, :zig, :c], do: assert Compile.available?(lang)
     end
 
     test "an unreachable builder surfaces a clear error" do
@@ -112,7 +154,7 @@ defmodule Convoy.CompileTest do
   end
 
   test "missing toolchains report unavailable with an install hint" do
-    for lang <- [:rust, :tinygo, :assemblyscript] do
+    for lang <- [:rust, :tinygo, :assemblyscript, :zig, :c] do
       unless Compile.available?(lang) do
         assert {:error, msg} = Compile.to_wasm(lang, Compile.template(lang))
         assert msg =~ "not"

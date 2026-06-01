@@ -16,7 +16,7 @@ defmodule Convoy.Engine.Region do
   Players join via `submit_player/5` (the CLI / HTTP API / browser upload). Each
   player's program is untrusted WebAssembly run with fuel metering
   (`Convoy.Engine.Wasm`, primer §7) — a per-player fuel budget, traps contained.
-  Any language (Rust, Go, AssemblyScript, hand-written WAT) compiles to it.
+  Any language (Rust, Go, AssemblyScript, Zig, C, hand-written WAT) compiles to it.
 
   ## Persistence (primer §8)
 

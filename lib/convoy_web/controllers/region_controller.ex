@@ -12,7 +12,7 @@ defmodule ConvoyWeb.RegionController do
   `player` is optional (defaults to the editor player). Submitting different
   players into the same region id is how multiplayer works: each becomes an
   independent player in one shared world. Languages: `wat`,
-  `assemblyscript`, `rust`, `tinygo`, `wasm`. Compilation happens server-side
+  `assemblyscript`, `rust`, `tinygo`, `zig`, `c`, `wasm`. Compilation happens server-side
   (`Convoy.Loader` → `Convoy.Compile`); the region is created if needed, the
   player's program loaded, and the sim started.
 
@@ -36,6 +36,8 @@ defmodule ConvoyWeb.RegionController do
     "assemblyscript" => :assemblyscript,
     "rust" => :rust,
     "tinygo" => :tinygo,
+    "zig" => :zig,
+    "c" => :c,
     "wasm" => :wasm
   }
 
@@ -75,7 +77,14 @@ defmodule ConvoyWeb.RegionController do
     with {:ok, backend, exec, display} <- Loader.prepare(lang, source),
          :ok <- Engine.submit_player(id, player, backend, exec, display) do
       Engine.play(id)
-      json(conn, %{status: "ok", region: id, player: player, backend: backend, source: short(display)})
+
+      json(conn, %{
+        status: "ok",
+        region: id,
+        player: player,
+        backend: backend,
+        source: short(display)
+      })
     else
       {:error, msg} -> fail(conn, 422, msg)
     end
@@ -87,7 +96,7 @@ defmodule ConvoyWeb.RegionController do
   defp resolve_language(%{"file" => f}) when is_binary(f), do: by_ext(f)
 
   defp resolve_language(_),
-    do: {:error, "specify ?lang=rust|tinygo|assemblyscript|wat|wasm (or ?file=bot.rs)"}
+    do: {:error, "specify ?lang=rust|tinygo|assemblyscript|zig|c|wat|wasm (or ?file=bot.rs)"}
 
   defp by_name(name) do
     case Map.get(@languages, name) do
@@ -101,6 +110,8 @@ defmodule ConvoyWeb.RegionController do
       ".rs" -> {:ok, :rust}
       ".go" -> {:ok, :tinygo}
       ".ts" -> {:ok, :assemblyscript}
+      ".zig" -> {:ok, :zig}
+      ".c" -> {:ok, :c}
       ".wat" -> {:ok, :wat}
       ".wasm" -> {:ok, :wasm}
       ext -> {:error, "can't infer language from '#{ext}' — pass ?lang="}

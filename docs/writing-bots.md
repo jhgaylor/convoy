@@ -85,8 +85,8 @@ curl --data-binary @bot.rs -H 'Content-Type: application/octet-stream' \
 - Already have a compiled module? `lang=wasm` and the binary is the body:
   `curl --data-binary @bot.wasm ...?player=bob&lang=wasm`.
 
-Rust / Go / AssemblyScript are compiled by an isolated builder service (no
-secrets, no network egress); WAT compiles in-process. The
+Rust / Go / AssemblyScript / Zig / C are compiled by an isolated builder
+service (no secrets, no network egress); WAT compiles in-process. The
 response is JSON: `{"status":"ok","player":"bob","backend":"wasm",...}`.
 
 **In the browser:** pick your language, paste source (or **Upload .wasm**), set a
@@ -99,6 +99,8 @@ player name, and Run.
 | **Rust** | ✅ first-class | `wasm32-unknown-unknown`, zero imports |
 | **Go (TinyGo)** | ✅ | `wasm-unknown` target, zero imports |
 | **AssemblyScript** | ✅ (the "JS/TS" path) | `asc --runtime stub`, zero imports |
+| **Zig** | ✅ | `wasm32-freestanding`, zero imports |
+| **C** | ✅ | `clang --target=wasm32 -nostdlib`, zero imports |
 | **WAT** | ✅ (no toolchain) | Wasmtime compiles the text directly |
 | Plain JavaScript | ❌ | needs an embedded JS engine — see below |
 | Ruby | ❌ | same — `ruby.wasm` is a whole VM |
@@ -146,6 +148,38 @@ asc bot.ts -o bot.wasm --runtime stub --optimize
 
 `--runtime stub` is what drops the runtime imports so the module instantiates.
 In local dev, `mix convoy.run bot.ts` does this for you.
+
+### Zig
+
+Install: `brew install zig` (or grab a build from
+[ziglang.org/download](https://ziglang.org/download)).
+
+Starter: [`examples/harvester.zig`](../examples/harvester.zig). Compile:
+
+```bash
+zig build-exe bot.zig -target wasm32-freestanding -O ReleaseSmall \
+  -fno-entry -rdynamic -femit-bin=bot.wasm
+```
+
+`export fn decide(...)` gives the C ABI; `-fno-entry` drops the `_start`
+entry point and `wasm32-freestanding` keeps it import-free. In local dev,
+`mix convoy.run bot.zig` runs the same command.
+
+### C
+
+Install an LLVM toolchain with the wasm linker: `brew install llvm` (gives you a
+wasm-capable `clang` plus `wasm-ld`). Apple's stock clang can't link wasm.
+
+Starter: [`examples/harvester.c`](../examples/harvester.c). Compile:
+
+```bash
+clang --target=wasm32 -O3 -nostdlib -Wl,--no-entry -Wl,--export=decide \
+  -o bot.wasm bot.c
+```
+
+`-nostdlib -Wl,--no-entry` drops libc and the entry point; `-Wl,--export=decide`
+keeps and exports the one function. A pure-arithmetic `decide` has no imports. In
+local dev, `mix convoy.run bot.c` does this for you.
 
 ### WAT (WebAssembly text)
 

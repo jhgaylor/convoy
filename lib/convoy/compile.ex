@@ -36,20 +36,22 @@ defmodule Convoy.Compile do
 
   @doc "Languages this module can compile from source (excludes raw :upload)."
   @spec languages() :: [atom()]
-  def languages, do: [:wat, :assemblyscript, :rust, :tinygo]
+  def languages, do: [:wat, :assemblyscript, :rust, :tinygo, :zig, :c]
 
   @doc "Human label for a language id."
   def label(:wat), do: "WAT"
   def label(:assemblyscript), do: "AssemblyScript"
   def label(:rust), do: "Rust"
   def label(:tinygo), do: "TinyGo"
+  def label(:zig), do: "Zig"
+  def label(:c), do: "C"
 
   @doc """
   Compile source to wasm bytes (or pass WAT text through untouched, since
   Wasmtime compiles it directly). Returns `{:ok, bytes_or_wat}` or
   `{:error, message}`.
   """
-  @compiled [:assemblyscript, :rust, :tinygo]
+  @compiled [:assemblyscript, :rust, :tinygo, :zig, :c]
 
   @spec to_wasm(atom(), binary()) :: {:ok, binary()} | {:error, String.t()}
   def to_wasm(:wat, source), do: {:ok, source}
@@ -67,16 +69,25 @@ defmodule Convoy.Compile do
   defp compile_locally(:assemblyscript, source), do: compile_assemblyscript(source)
   defp compile_locally(:rust, source), do: compile_rust(source)
   defp compile_locally(:tinygo, source), do: compile_tinygo(source)
+  defp compile_locally(:zig, source), do: compile_zig(source)
+  defp compile_locally(:c, source), do: compile_c(source)
 
   @doc "Is the toolchain for this language available (via the builder, or locally)?"
   @spec available?(atom()) :: boolean()
   def available?(:wat), do: true
-  def available?(lang) when lang in @compiled, do: not is_nil(builder_url()) or local_available?(lang)
+
+  def available?(lang) when lang in @compiled,
+    do: not is_nil(builder_url()) or local_available?(lang)
+
   def available?(_), do: false
 
   defp local_available?(:assemblyscript), do: File.exists?(asc_bin())
   defp local_available?(:rust), do: not is_nil(rustc_bin())
   defp local_available?(:tinygo), do: not is_nil(System.find_executable("tinygo"))
+  defp local_available?(:zig), do: not is_nil(System.find_executable("zig"))
+  # Apple's stock clang lacks `wasm-ld`, so require both a clang and the wasm
+  # linker before claiming C is buildable (Homebrew LLVM ships both).
+  defp local_available?(:c), do: not is_nil(clang_bin()) and not is_nil(wasm_ld_bin())
 
   # --- remote builder (sandboxed compile service) ---
 
@@ -101,10 +112,21 @@ defmodule Convoy.Compile do
 
   @doc "How to install a missing toolchain."
   def install_hint(:rust),
-    do: "Install Rust + the wasm target: `curl https://sh.rustup.rs -sSf | sh` then `rustup target add wasm32-unknown-unknown`."
+    do:
+      "Install Rust + the wasm target: `curl https://sh.rustup.rs -sSf | sh` then `rustup target add wasm32-unknown-unknown`."
 
-  def install_hint(:tinygo), do: "Install TinyGo: `brew install tinygo-org/tools/tinygo` (needs LLVM)."
+  def install_hint(:tinygo),
+    do: "Install TinyGo: `brew install tinygo-org/tools/tinygo` (needs LLVM)."
+
   def install_hint(:assemblyscript), do: "Run `npm install assemblyscript` in priv/asc."
+
+  def install_hint(:zig),
+    do: "Install Zig: `brew install zig` or grab a build from https://ziglang.org/download."
+
+  def install_hint(:c),
+    do:
+      "Install an LLVM clang with the wasm linker: `brew install llvm` (provides clang + wasm-ld). Apple's stock clang won't link wasm."
+
   def install_hint(_), do: nil
 
   # --- starter templates (each exports `decide` with the Wasm ABI) ---
@@ -170,6 +192,51 @@ defmodule Convoy.Compile do
     """
   end
 
+  def template(:zig) do
+    """
+    // Harvester behaviour in Zig, compiled single-file to wasm32-freestanding
+    // (no std, no imports). `export fn decide` gives it the C ABI the sim wants;
+    // return an intent code.
+    export fn decide(
+        cargo: i32,
+        cargo_max: i32,
+        at_base: i32,
+        on_resource: i32,
+        res_dx: i32,
+        res_dy: i32,
+        base_dx: i32,
+        base_dy: i32,
+        tick: i32,
+    ) i32 {
+        _ = res_dx;
+        _ = res_dy;
+        _ = base_dx;
+        _ = base_dy;
+        _ = tick;
+        if (at_base != 0 and cargo > 0) return 2; // unload
+        if (cargo >= cargo_max) return 3; // head to base
+        if (on_resource != 0) return 1; // harvest
+        return 4; // seek nearest ore
+    }
+    """
+  end
+
+  def template(:c) do
+    """
+    // Harvester behaviour in C, compiled single-file to wasm32 with no libc and
+    // no imports. `decide` is exported by the linker; return an intent code.
+    int decide(
+        int cargo, int cargo_max, int at_base, int on_resource,
+        int res_dx, int res_dy, int base_dx, int base_dy, int tick
+    ) {
+      if (at_base && cargo > 0) return 2; // unload
+      if (cargo >= cargo_max)   return 3; // head to base
+      if (on_resource)          return 1; // harvest
+      return 4;                           // seek nearest ore
+    }
+    """
+  end
+
   # --- compiler backends ---
 
   defp compile_assemblyscript(source) do
@@ -232,10 +299,91 @@ defmodule Convoy.Compile do
           # `//export decide` function from pulling in runtime imports.
           run(
             bin,
-            ["build", "-o", out_file, "-target=wasm-unknown", "-scheduler=none", "-gc=leaking", "-no-debug", in_file],
+            [
+              "build",
+              "-o",
+              out_file,
+              "-target=wasm-unknown",
+              "-scheduler=none",
+              "-gc=leaking",
+              "-no-debug",
+              in_file
+            ],
             out_file
           )
         end)
+    end
+  end
+
+  defp compile_zig(source) do
+    case System.find_executable("zig") do
+      nil ->
+        {:error, "Zig toolchain not found. #{install_hint(:zig)}"}
+
+      bin ->
+        with_tempdir(fn dir ->
+          in_file = Path.join(dir, "bot.zig")
+          out_file = Path.join(dir, "bot.wasm")
+          File.write!(in_file, source)
+
+          # `wasm32-freestanding` + `-fno-entry`: a library with NO host imports
+          # (no WASI, no `_start`) — the sim instantiates with an empty import
+          # set. `-rdynamic` keeps the `export fn decide` symbol from being
+          # stripped. Caches go in the throwaway dir so nothing leaks to cwd.
+          run(
+            bin,
+            [
+              "build-exe",
+              in_file,
+              "-target",
+              "wasm32-freestanding",
+              "-O",
+              "ReleaseSmall",
+              "-fno-entry",
+              "-rdynamic",
+              "-femit-bin=" <> out_file,
+              "--cache-dir",
+              Path.join(dir, "zig-cache"),
+              "--global-cache-dir",
+              Path.join(dir, "zig-global-cache")
+            ],
+            out_file
+          )
+        end)
+    end
+  end
+
+  defp compile_c(source) do
+    # Need a wasm-capable clang AND the wasm linker — Apple's stock clang has
+    # neither the wasm32 backend nor wasm-ld, so guard on both before trying.
+    if is_nil(clang_bin()) or is_nil(wasm_ld_bin()) do
+      {:error, "C toolchain not found (need an LLVM clang + wasm-ld). #{install_hint(:c)}"}
+    else
+      bin = clang_bin()
+
+      with_tempdir(fn dir ->
+        in_file = Path.join(dir, "bot.c")
+        out_file = Path.join(dir, "bot.wasm")
+        File.write!(in_file, source)
+
+        # Freestanding wasm: `-nostdlib -Wl,--no-entry` (no libc, no `_start`)
+        # and `-Wl,--export=decide` to keep + export the one function. Pure
+        # arithmetic means the module has zero imports, as the sim requires.
+        run(
+          bin,
+          [
+            "--target=wasm32",
+            "-O3",
+            "-nostdlib",
+            "-Wl,--no-entry",
+            "-Wl,--export=decide",
+            "-o",
+            out_file,
+            in_file
+          ],
+          out_file
+        )
+      end)
     end
   end
 
@@ -247,7 +395,9 @@ defmodule Convoy.Compile do
 
     case Task.yield(task, @timeout_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, {_out, 0}} ->
-        if File.exists?(out_file), do: {:ok, File.read!(out_file)}, else: {:error, "compiler produced no output"}
+        if File.exists?(out_file),
+          do: {:ok, File.read!(out_file)},
+          else: {:error, "compiler produced no output"}
 
       {:ok, {out, _code}} ->
         {:error, trim_output(out)}
@@ -287,6 +437,25 @@ defmodule Convoy.Compile do
       else
         _ -> nil
       end
+  end
+
+  # Prefer a Homebrew LLVM clang (wasm-capable, ships its own wasm-ld) over the
+  # PATH clang, which on macOS is Apple's and can't link wasm. On the Linux
+  # builder the Homebrew paths don't exist, so it falls through to PATH clang.
+  @brew_llvm_bin ["/opt/homebrew/opt/llvm/bin", "/usr/local/opt/llvm/bin"]
+
+  defp clang_bin do
+    Enum.find_value(@brew_llvm_bin, fn dir ->
+      path = Path.join(dir, "clang")
+      if File.exists?(path), do: path
+    end) || System.find_executable("clang")
+  end
+
+  defp wasm_ld_bin do
+    Enum.find_value(@brew_llvm_bin, fn dir ->
+      path = Path.join(dir, "wasm-ld")
+      if File.exists?(path), do: path
+    end) || System.find_executable("wasm-ld")
   end
 
   defp priv_dir do

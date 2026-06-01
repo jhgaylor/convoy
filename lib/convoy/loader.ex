@@ -9,7 +9,7 @@ defmodule Convoy.Loader do
   Compilation (the risky part) is delegated to `Convoy.Compile`; this only routes.
 
   - `:wat` → Wasmtime compiles the text directly.
-  - `:assemblyscript` / `:rust` / `:tinygo` → compiled to wasm bytes first.
+  - `:assemblyscript` / `:rust` / `:tinygo` / `:zig` / `:c` → compiled to wasm bytes first.
   - `:wasm` → raw `.wasm` bytes, loaded as-is.
 
   `exec` is what runs; `display` is the human-facing source (high-level source
@@ -18,7 +18,7 @@ defmodule Convoy.Loader do
 
   alias Convoy.Compile
 
-  @compiled [:assemblyscript, :rust, :tinygo]
+  @compiled [:assemblyscript, :rust, :tinygo, :zig, :c]
 
   @type prepared :: {:ok, :wasm, binary(), String.t()} | {:error, String.t()}
 
