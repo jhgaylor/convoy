@@ -124,6 +124,7 @@ defmodule Convoy.Engine.Colony.Region do
       tick_ms: Keyword.get(opts, :tick_ms, @default_ms),
       last_fuel: %{},
       history: %{},
+      timer: nil,
       observers: MapSet.new()
     }
 
@@ -188,7 +189,7 @@ defmodule Convoy.Engine.Colony.Region do
 
   @impl true
   def handle_cast(:play, state), do: {:noreply, schedule(%{state | status: :running})}
-  def handle_cast(:pause, state), do: {:noreply, %{state | status: :paused}}
+  def handle_cast(:pause, state), do: {:noreply, cancel_timer(%{state | status: :paused})}
   def handle_cast(:step, state), do: {:noreply, broadcast(advance(state))}
   def handle_cast({:set_speed, ms}, state), do: {:noreply, %{state | tick_ms: clamp_ms(ms)}}
 
@@ -427,12 +428,23 @@ defmodule Convoy.Engine.Colony.Region do
 
   # --- broadcast / snapshot ---
 
+  # Arm exactly ONE tick timer. Idempotent: cancels any outstanding timer first,
+  # so submit/play/reset can't stack independent tick loops on top of the running
+  # one (that bug double-stepped the sim — "two ticks, pause, two ticks"). When
+  # not running, just clear the timer.
   defp schedule(%{status: :running} = state) do
-    Process.send_after(self(), :tick, state.tick_ms)
-    state
+    state = cancel_timer(state)
+    %{state | timer: Process.send_after(self(), :tick, state.tick_ms)}
   end
 
-  defp schedule(state), do: state
+  defp schedule(state), do: cancel_timer(state)
+
+  defp cancel_timer(%{timer: ref} = state) when is_reference(ref) do
+    Process.cancel_timer(ref)
+    %{state | timer: nil}
+  end
+
+  defp cancel_timer(state), do: state
 
   defp broadcast(state) do
     Phoenix.PubSub.broadcast(Convoy.PubSub, topic(state.id), {:colony_update, public(state)})

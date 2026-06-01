@@ -73,6 +73,24 @@ defmodule Convoy.Engine.Colony.RegionTest do
     end
   end
 
+  test "repeated play/submit don't stack duplicate tick loops (steady single-rate sim)" do
+    id = fresh_id()
+    Region.ensure(id, seed: 1, tick_ms: 50)
+
+    # Hammer play: each cast used to arm another independent :tick timer with no
+    # cancel, so N plays => N concurrent loops => the sim ran N× too fast in
+    # bursts ("two ticks, pause, two ticks"). Scheduling is now idempotent.
+    for _ <- 1..5, do: Region.play(id)
+
+    t0 = Region.snapshot(id).tick
+    Process.sleep(500)
+    dt = Region.snapshot(id).tick - t0
+
+    # One 50ms loop advances ~10 ticks in 500ms; five stacked loops would be ~50.
+    assert dt <= 20, "tick advanced #{dt} in ~500ms at 50ms/tick — duplicate tick loops?"
+    assert dt >= 4, "sim should still be ticking (advanced #{dt})"
+  end
+
   test "set_color pins a player's color index, exposed in the snapshot and dropped on kick" do
     id = fresh_id()
     Region.ensure(id, seed: 1)
