@@ -145,6 +145,24 @@ defmodule Convoy.Engine.World do
     }
   end
 
+  @doc """
+  Remove a player from the world: drop their harvesters and their score.
+  `next_entity_id` is left as-is so ids are never reused. No-op if absent.
+  """
+  @spec remove_player(t(), player_id()) :: t()
+  def remove_player(%World{} = world, player_id) do
+    if Map.has_key?(world.scores, player_id) do
+      %{
+        world
+        | entities: Enum.reject(world.entities, &(&1.owner == player_id)),
+          scores: Map.delete(world.scores, player_id),
+          events: ["Player #{player_id} was kicked." | world.events]
+      }
+    else
+      world
+    end
+  end
+
   @doc "Credit ore to a player's score."
   @spec credit(t(), player_id(), non_neg_integer()) :: t()
   def credit(%World{} = world, player_id, amount) do

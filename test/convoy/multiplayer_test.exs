@@ -89,6 +89,35 @@ defmodule Convoy.MultiplayerTest do
     assert Map.has_key?(snap.players, "worker")
   end
 
+  test "remove_player drops a player's harvesters and score" do
+    world = World.generate(seed: 1) |> World.add_player("p1") |> World.add_player("p2")
+    world = World.remove_player(world, "p1")
+
+    assert World.players(world) == ["p2"]
+    assert Enum.all?(world.entities, &(&1.owner == "p2"))
+    assert World.score(world, "p1") == 0
+    # removing an absent player is a no-op
+    assert World.remove_player(world, "ghost") == world
+  end
+
+  test "kicking a player from a Region removes them but leaves others running" do
+    id = "mp-#{System.unique_integer([:positive])}"
+    Engine.ensure_region(id)
+    :ok = Engine.submit_player(id, "alice", :rules, @worker, @worker)
+    :ok = Engine.submit_player(id, "bob", :rules, @worker, @worker)
+
+    assert :ok = Engine.kick_player(id, "alice")
+    snap = Engine.snapshot(id)
+
+    assert Map.keys(snap.scores) == ["bob"]
+    refute Map.has_key?(snap.players, "alice")
+    owners = snap.world.entities |> Enum.map(& &1.owner) |> Enum.uniq()
+    assert owners == ["bob"]
+
+    # kicking someone who isn't there is reported, not crashing
+    assert {:error, :not_found} = Engine.kick_player(id, "nobody")
+  end
+
   test "a fresh region has no players until someone submits" do
     id = "empty-#{System.unique_integer([:positive])}"
     Engine.ensure_region(id)

@@ -23,6 +23,7 @@ defmodule ConvoyWeb.AdminLive do
      socket
      |> assign(:prev_reductions, %{})
      |> assign(:prev_sched, sched_sample())
+     |> assign(:expanded, MapSet.new())
      |> refresh()}
   end
 
@@ -43,6 +44,17 @@ defmodule ConvoyWeb.AdminLive do
   def handle_event("resume", %{"id" => id}, socket) do
     # Start the region; it restores its snapshot and resumes its prior status.
     Engine.ensure_region(id, persist: true)
+    {:noreply, refresh(socket)}
+  end
+
+  def handle_event("toggle", %{"id" => id}, socket) do
+    expanded = socket.assigns.expanded
+    expanded = if MapSet.member?(expanded, id), do: MapSet.delete(expanded, id), else: MapSet.put(expanded, id)
+    {:noreply, assign(socket, :expanded, expanded)}
+  end
+
+  def handle_event("kick", %{"region" => region, "player" => player}, socket) do
+    Engine.kick_player(region, player)
     {:noreply, refresh(socket)}
   end
 
@@ -183,6 +195,12 @@ defmodule ConvoyWeb.AdminLive do
               <%= for r <- @rows do %>
                 <tr class="border-b border-slate-800/60 hover:bg-slate-800/30">
                   <td class="px-3 py-2 font-mono">
+                    <button
+                      phx-click="toggle"
+                      phx-value-id={r.region_id}
+                      class="text-slate-500 hover:text-slate-300 mr-1 w-3 inline-block"
+                      title="show players"
+                    >{if MapSet.member?(@expanded, r.region_id), do: "▾", else: "▸"}</button>
                     <.link navigate={~p"/?region=#{r.region_id}"} class="text-sky-300 hover:underline">
                       {r.region_id}
                     </.link>
@@ -232,6 +250,31 @@ defmodule ConvoyWeb.AdminLive do
                     </button>
                   </td>
                 </tr>
+                <tr :if={MapSet.member?(@expanded, r.region_id)} class="border-b border-slate-800/60 bg-slate-950/40">
+                  <td colspan="10" class="px-6 py-2">
+                    <%= if r.scores == %{} do %>
+                      <span class="text-[11px] text-slate-600">No players in this region.</span>
+                    <% else %>
+                      <div class="flex flex-wrap gap-2">
+                        <%= for {player, score} <- Enum.sort_by(r.scores, fn {_p, s} -> -s end) do %>
+                          <span class="inline-flex items-center gap-2 bg-slate-800 rounded px-2 py-1 text-xs">
+                            <span class="font-mono text-slate-200">{player}</span>
+                            <span class="font-mono text-slate-400">{score}</span>
+                            <button
+                              :if={r.status != :stopped}
+                              phx-click="kick"
+                              phx-value-region={r.region_id}
+                              phx-value-player={player}
+                              data-confirm={"Kick '#{player}' from #{r.region_id}?"}
+                              class="text-rose-400 hover:text-rose-300"
+                              title="kick player"
+                            >✕</button>
+                          </span>
+                        <% end %>
+                      </div>
+                    <% end %>
+                  </td>
+                </tr>
               <% end %>
               <tr :if={@rows == []}>
                 <td colspan="10" class="px-3 py-6 text-center text-slate-500 text-xs">
@@ -243,7 +286,7 @@ defmodule ConvoyWeb.AdminLive do
         </section>
 
         <p class="text-[10px] text-slate-600">
-          Refreshes every 1s · Stop frees compute (a persisted region resumes when reopened) · Delete also removes its snapshot.
+          Refreshes every 1s · ▸ expand a region to kick players · Stop frees compute (a persisted region resumes when reopened) · Delete also removes its snapshot.
         </p>
       </div>
     </div>

@@ -83,6 +83,9 @@ defmodule Convoy.Engine.Region do
   def load_program(id, backend, exec, display \\ nil),
     do: submit_player(id, World.default_player(), backend, exec, display)
 
+  @doc "Remove a player from the region — stops their program, drops their harvesters and score."
+  def kick_player(id, player_id), do: GenServer.call(via(id), {:kick, player_id})
+
   def play(id), do: GenServer.cast(via(id), :play)
   def pause(id), do: GenServer.cast(via(id), :pause)
   def step(id), do: GenServer.cast(via(id), :step)
@@ -136,6 +139,20 @@ defmodule Convoy.Engine.Region do
         state = mark_error(state, player_id, msg)
         broadcast(state)
         {:reply, {:error, msg}, state}
+    end
+  end
+
+  def handle_call({:kick, player_id}, _from, state) do
+    case Map.pop(state.players, player_id) do
+      {nil, _players} ->
+        {:reply, {:error, :not_found}, state}
+
+      {player, players} ->
+        Wasm.stop(player.wasm)
+        state = %{state | players: players, world: World.remove_player(state.world, player_id)}
+        persist_now(state)
+        broadcast(state)
+        {:reply, :ok, state}
     end
   end
 

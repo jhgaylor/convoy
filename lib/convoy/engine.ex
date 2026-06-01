@@ -102,6 +102,7 @@ defmodule Convoy.Engine do
   defdelegate snapshot(id), to: Region
   defdelegate load_program(id, backend, exec, display), to: Region
   defdelegate submit_player(id, player_id, backend, exec, display), to: Region
+  defdelegate kick_player(id, player_id), to: Region
   defdelegate play(id), to: Region
   defdelegate pause(id), to: Region
   defdelegate step(id), to: Region
