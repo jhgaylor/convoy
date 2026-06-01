@@ -2,20 +2,24 @@
 //
 // Most bots optimise delivery: mine ore, forge goods, run convoys to the market,
 // bank credits. The Raider runs a *lean* economy and instead steers its convoys
-// to HUNT and rob everyone else's. The market is the only contested ground —
-// when two convoys meet on a cell one seizes the other's shipment — so the
-// Raider turns its own convoys into hunters.
+// to HUNT and rob everyone else's. The market is the only contested ground.
+//
+// Capture is a STANCE TRIANGLE: a HUNT seizes a passive (advancing) shipment it
+// lands on, a DEFEND seizes a HUNT that lands on it, and a DEFEND lets passive
+// traffic pass untouched. So you can't just park on the drop point and farm —
+// to rob a shipment you must HUNT it, and you must actually land on its cell.
 //
 // How it works (v2 ABI — one `tick` brain, no per-entity exports):
 //   - economy: keep harvesters mining, build ONE refinery, then launch convoys
 //     aggressively. Convoys are the hunters, so we want them on the board fast.
 //   - raiding: the view hands us the shared market — every convoy with an
-//     `owner` flag (0 = ours, 1 = a rival). For each of OUR convoys we find the
-//     nearest rival convoy and:
-//       * adjacent  -> DEFEND (op 8): hold the cell. A defender beats any convoy
-//         that moves onto it, so we seize their shipment when they step in.
-//       * farther   -> HUNT (op 9): close the gap toward the nearest rival.
-//       * none      -> leave it on auto-pilot to bank the shipment ourselves.
+//     `owner` flag (0 = ours, 1 = a rival). Rivals advance greedily toward the
+//     market at (W-1, H-1) (x first, then y), so their next cell is predictable.
+//     For each of OUR convoys we find the nearest rival, PREDICT the cell it will
+//     step into next, and HUNT (op 9) with a steer that puts us on that cell —
+//     an interception, not a tail-chase (auto-homing just trails a moving target).
+//     Landing on a passive shipment seizes it. (A rival ESCORT in DEFEND on that
+//     cell would flip the capture and take OUR cargo — that's the counterplay.)
 //
 // A foil to the delivery-optimisers (demo / shipper / builder). It banks few
 // credits of its own; it wins by taking everyone else's. Turn a couple loose in
@@ -95,8 +99,9 @@ const OP_TRANSFER: u32 = 3; // a=destination building id
 const OP_BUILD: u32 = 4; // a=building kind, b=(x<<8 | y)
 const OP_SPAWN: u32 = 5; // a=unit kind
 const OP_LAUNCH: u32 = 7; // load a convoy and run it to the market for credits
-const OP_DEFEND: u32 = 8; // target=our convoy id — hold cell, win any collision
-const OP_HUNT: u32 = 9; // target=our convoy id — step toward nearest rival convoy
+#[allow(dead_code)] // the raider plays pure offense; defend is here for reference
+const OP_DEFEND: u32 = 8; // target=our convoy id — escort: hold cell, seize a hunter
+const OP_HUNT: u32 = 9; // target=our convoy id — raider: a=dx b=dy steer (0,0 auto-homes)
 
 const UNIT_HARVESTER: u32 = 0;
 const BLD_SPAWNER: u32 = 0;
@@ -104,6 +109,8 @@ const BLD_REFINERY: u32 = 1;
 const PROGRESS_DONE: u32 = 255;
 
 // View header offsets (tick is at 0; this bot doesn't read it).
+const H_WIDTH: usize = 4;
+const H_HEIGHT: usize = 6;
 const H_GOODS: usize = 12;
 const H_N_UNITS: usize = 20;
 const H_N_BUILDINGS: usize = 22;
@@ -255,10 +262,13 @@ fn colony_logic(out: &mut Out) {
         }
     }
 
-    // THE RAID: steer our convoys to rob rivals. The market array carries every
-    // convoy in transit with an owner flag (0 = ours, 1 = a rival). For each of
-    // ours, find the nearest rival: adjacent → DEFEND and seize when they step
-    // in; farther → HUNT to close the gap; none → leave it on auto-pilot.
+    // THE RAID: steer our convoys to INTERCEPT rivals. The market array carries
+    // every convoy in transit with an owner flag (0 = ours, 1 = a rival). Rivals
+    // advance greedily toward the market at (W-1, H-1), so we predict the cell a
+    // rival steps into next and HUNT onto it — landing on a passive shipment
+    // seizes its cargo. (A naive tail-chase just trails a moving target forever.)
+    let market_x = rd_u16(H_WIDTH).saturating_sub(1);
+    let market_y = rd_u16(H_HEIGHT).saturating_sub(1);
     for c in 0..n_mkt {
         let o = mkt + c * MKT_SZ;
         if rd_u8(o + 4) != 0 {
@@ -268,25 +278,38 @@ fn colony_logic(out: &mut Out) {
         let cx = rd_u8(o + 5);
         let cy = rd_u8(o + 6);
 
+        // nearest rival convoy (and where it is)
         let mut nearest = u32::MAX;
+        let mut ex = 0;
+        let mut ey = 0;
+        let mut found = false;
         for e in 0..n_mkt {
             let p = mkt + e * MKT_SZ;
             if rd_u8(p + 4) != 1 {
                 continue; // rivals only
             }
-            let d = manhattan(cx, cy, rd_u8(p + 5), rd_u8(p + 6));
+            let rx = rd_u8(p + 5);
+            let ry = rd_u8(p + 6);
+            let d = manhattan(cx, cy, rx, ry);
             if d < nearest {
                 nearest = d;
+                ex = rx;
+                ey = ry;
+                found = true;
             }
         }
 
-        if nearest == u32::MAX {
-            // No rival in play — auto-advance (emit nothing) and bank this one.
-        } else if nearest <= 1 {
-            out.push(OP_DEFEND, id, 0, 0);
-        } else {
-            out.push(OP_HUNT, id, 0, 0);
+        if !found {
+            continue; // no rival in play — auto-advance (emit nothing), bank this one
         }
+
+        // aim at the rival's PREDICTED next cell (one greedy step toward market),
+        // then steer one step toward that intercept point.
+        let (rdx, rdy) = step_toward(ex, ey, market_x, market_y);
+        let aim_x = (ex as i32 + rdx).max(0) as u32;
+        let aim_y = (ey as i32 + rdy).max(0) as u32;
+        let (dx, dy) = step_toward(cx, cy, aim_x, aim_y);
+        out.push(OP_HUNT, id, dx, dy);
     }
 
     // Economy: lean. One refinery, then launch hard — convoys are the hunters,

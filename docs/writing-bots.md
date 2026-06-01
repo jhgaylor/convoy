@@ -35,9 +35,13 @@ What your `tick` is steering, in one breath:
    more harvesters. Construction and spawning take time — the pace is deliberate.
 4. **Ship.** `launch` a convoy: it loads goods and runs across the single shared
    **contested market** to sell for **credits** — the score.
-5. **Fight.** When two colonies' convoys share a market cell, one **seizes** the
-   other's shipment. That's the only PvP; your base is never attacked. The stake
-   is only the shipment in transit. Steer your convoys to `hunt` and `defend`.
+5. **Fight.** PvP is a **stance triangle** on the shared market — your base is
+   never attacked, the stake is only the shipment in transit. When enemy convoys
+   share a cell: a `hunt`er **seizes** a passive (advancing) shipment, a
+   `defend`er (escort) seizes a `hunt`er that lands on it, and a `defend`er lets
+   passive traffic pass. So you can't camp the drop point to farm — to rob a
+   shipment you must `hunt` and land on its cell; to protect one, shadow it with a
+   `defend`ing escort. Two passive convoys crossing don't fight.
 
 ## The ABI: a memory handshake
 
@@ -108,8 +112,8 @@ signed arguments whose meaning depends on the op:
 | `4` | **build** | — | `a`=building kind, `b`=packed coords `x*256 + y` (spends goods) |
 | `5` | **spawn** | — | `a`=unit kind — queue a unit at the spawner (spends goods, pop-capped) |
 | `7` | **launch** | — | load a convoy and run it to the market |
-| `8` | **defend** | convoy id | hold this cell; a defender wins any collision a mover causes |
-| `9` | **hunt** | convoy id | step toward the nearest rival convoy (advance if none) |
+| `8` | **defend** | convoy id | escort stance: hold this cell; seizes a hunter that lands on it (lets passive convoys pass) |
+| `9` | **hunt** | convoy id | raider stance: `a`=dx, `b`=dy steer one cell (or `0,0` to auto-home onto the nearest rival); seizes a passive convoy you land on |
 
 Building kinds: `0` spawner · `1` refinery · `2` storage. Unit kinds: `0`
 harvester. (Op `6` `upgrade` is reserved in the wire format but not yet resolved
@@ -124,20 +128,37 @@ on arrival its shipment **sells for credits** — a premium over the goods you
 spent, the reward for the run. Your basic choice is **when** to ship vs. hoard,
 build, or grow.
 
-The market is the **only contested ground**. When two players' convoys land on the
-same cell, one **seizes** the other's shipment — a deterministic ambush. You steer
-your *own* convoys (the ones with `owner == 0` in the market array) every tick:
+The market is the **only contested ground**, and capture is a **stance triangle**.
+Each tick a convoy's stance is whatever you ordered it to do — `hunt` (raider),
+`defend` (escort), or passive (`move`/auto-advance). When enemy convoys share a
+cell, a convoy is robbed only when an enemy there holds a stance that **beats** it:
 
-- **`hunt`** (op 9) — step toward the nearest rival convoy to set up a seizure.
-- **`defend`** (op 8) — hold this cell. A convoy that *defended* beats any convoy
-  that moves onto it, regardless of id. You trade your own delivery for the chance
-  to rob someone. (With no defender on a contested cell, the lowest id wins.)
-- **`move`** (op 2, targeting a convoy id) — steer it a cell yourself.
+```
+hunt  ⊳ passive   a raider plunders an unguarded shipment
+defend ⊳ hunt     an escort turns the tables on the raider, taking its haul
+defend ⊳ passive  NO — a defender lets peaceful traffic pass
+```
+
+Nothing dominates: `passive → hunt → defend → (beats nothing else)`. Two passive
+convoys crossing the same cell **don't fight** — raiding is a deliberate, opt-in
+act, not an accident of geometry. You steer your *own* convoys (the ones with
+`owner == 0` in the market array) every tick:
+
+- **`hunt`** (op 9) — the raider stance. `a`/`b` steer one cell (sign only), so
+  you can **intercept**: predict where a rival will step (rivals advance greedily
+  toward the market at `(W-1, H-1)`) and land on that cell to seize its cargo.
+  `0,0` auto-homes onto the nearest rival — fine for chasing, weak against a moving
+  target. A hunter that lands on a defending escort **loses its own cargo** to it.
+- **`defend`** (op 8) — the escort stance. Hold the cell and seize any hunter that
+  lands on it, regardless of id. It does **not** rob passive convoys, so a lone
+  defender can't farm the drop point — its job is to protect (shadow your own
+  shipment so a raider that pounces gets robbed instead).
+- **`move`** (op 2, targeting a convoy id) — steer it a cell yourself (passive).
 - emit nothing for a convoy and it **auto-advances** to the market and banks.
 
-[`examples/raider.rs`](../examples/raider.rs) is a worked bot built entirely
-around this: it runs a lean economy and turns its convoys into hunters that seize
-rivals' shipments instead of cashing in its own.
+The counterplay loop: to rob, `hunt` and intercept; to protect, run a `defend`ing
+escort alongside your shipment. [`examples/raider.rs`](../examples/raider.rs) is a
+worked bot built around the hunt-and-intercept side.
 
 ## Persistent memory
 

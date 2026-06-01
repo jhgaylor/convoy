@@ -534,7 +534,7 @@ defmodule ConvoyWeb.ColonyLive do
         <div class="pt-1 border-t border-slate-800">
           <div class="text-slate-300 mb-1">commands your <code>tick</code> can emit (16-byte records)</div>
           <code class="text-fuchsia-300 text-[10.5px] leading-relaxed block">
-            1 harvest(unit) · 2 move(unit, dx, dy) · 3 transfer(unit, building) · 4 build(kind, x«8|y) · 5 spawn(kind) · 7 launch_convoy · 8 defend(convoy) · 9 hunt(convoy)
+            1 harvest(unit) · 2 move(unit, dx, dy) · 3 transfer(unit, building) · 4 build(kind, x«8|y) · 5 spawn(kind) · 7 launch_convoy · 8 defend(convoy) · 9 hunt(convoy, dx, dy)
           </code>
           <p class="text-slate-500 mt-1">Full wire format: <code>lib/convoy/engine/colony_abi.ex</code>. Full reference bot: <code>examples/colony.rs</code> (builds refineries, spawns, ships).</p>
         </div>
@@ -603,8 +603,8 @@ defmodule ConvoyWeb.ColonyLive do
             <.action_row op="4" sig="build(kind, x«8|y)">queue a building at packed coords (spends goods)</.action_row>
             <.action_row op="5" sig="spawn(kind)">queue a unit at the spawner (spends goods, pop-capped)</.action_row>
             <.action_row op="7" sig="launch_convoy">load a convoy and send it into the market</.action_row>
-            <.action_row op="8" sig="defend(convoy)">hold position; a defender beats a mover in a capture</.action_row>
-            <.action_row op="9" sig="hunt(convoy)">chase the nearest enemy convoy to seize its cargo</.action_row>
+            <.action_row op="8" sig="defend(convoy)">hold position; an escort — seizes a <em>hunter</em> sharing its cell, but lets passive convoys pass</.action_row>
+            <.action_row op="9" sig="hunt(convoy, dx, dy)">raider stance; steer one cell by sign(dx/dy) (or 0,0 to auto-home). Seizes a passive convoy you land on — but loses your cargo to a defender there</.action_row>
           </div>
           <p class="text-[10px] text-slate-500 mt-1.5">
             <code>kind</code>: buildings 0 spawner · 1 refinery · 2 storage. Units 0 harvester. Op 0 is idle; full wire format in
