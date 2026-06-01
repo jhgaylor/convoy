@@ -33,12 +33,15 @@ defmodule Convoy.Engine.Render do
     cargo = world.entities |> Enum.map(& &1.cargo) |> Enum.sum()
 
     scores =
-      world.scores
-      |> Enum.sort_by(fn {_p, s} -> -s end)
-      |> Enum.map_join("  ", fn {p, s} -> "#{p}:#{s}" end)
+      world.bases
+      |> Enum.sort_by(fn {_p, b} -> -b.refined_total end)
+      |> Enum.map_join("  ", fn {p, b} ->
+        t = b.tech
+        "#{p}:#{b.refined_total}(ore #{b.ore}/goods #{b.goods}/R#{t.refine}C#{t.cargo}F#{t.fuel})"
+      end)
 
-    "tick #{world.tick}  delivered #{World.total_delivered(world)}  in-cargo #{cargo}  " <>
-      "ore-left #{World.ore_remaining(world)}\nscores  #{scores}"
+    "tick #{world.tick}  refined #{World.total_refined(world)}  stockpile #{World.total_stockpile(world)}  " <>
+      "in-cargo #{cargo}  ore-left #{World.ore_remaining(world)}\nbases  #{scores}"
   end
 
   defp events(%World{events: []}), do: ""

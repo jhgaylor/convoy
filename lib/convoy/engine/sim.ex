@@ -47,7 +47,9 @@ defmodule Convoy.Engine.Sim do
   Split out so a caller (e.g. `Region` with the WASM backend) can run the
   decider with fuel accounting before handing intents back to `apply_intents/2`.
   """
-  @spec collect_intents(World.t(), (World.entity(), World.t() -> term())) :: [{pos_integer(), term()}]
+  @spec collect_intents(World.t(), (World.entity(), World.t() -> term())) :: [
+          {pos_integer(), term()}
+        ]
   def collect_intents(%World{} = world, decide_fun) when is_function(decide_fun, 2) do
     world.entities
     |> Enum.sort_by(& &1.id)
@@ -64,6 +66,9 @@ defmodule Convoy.Engine.Sim do
     world = Enum.reduce(intents, world, fn {id, intent}, acc -> resolve(acc, id, intent) end)
 
     world
+    # The Forge: every base refines stockpiled ore into goods at its tech rate.
+    # Rate-based and deterministic, so warm regions stay fast-forwardable (§5).
+    |> World.refine_all()
     |> Map.update!(:tick, &(&1 + 1))
     |> replenish()
     |> Map.update!(:events, &Enum.take(&1, @max_events))
@@ -73,8 +78,11 @@ defmodule Convoy.Engine.Sim do
   # it drops to its last one (deterministic — see World.maybe_spawn_resource/1).
   defp replenish(world) do
     case World.maybe_spawn_resource(world) do
-      {world, nil} -> world
-      {world, pos} -> note(world, "A new ore deposit (#{World.resource_amount()}) appeared at #{fmt(pos)}.")
+      {world, nil} ->
+        world
+
+      {world, pos} ->
+        note(world, "A new ore deposit (#{World.resource_amount()}) appeared at #{fmt(pos)}.")
     end
   end
 
@@ -125,12 +133,34 @@ defmodule Convoy.Engine.Sim do
 
     if {e.x, e.y} == world.base and e.cargo > 0 do
       delivered = e.cargo
-      total = World.score(world, e.owner) + delivered
+      stockpile = World.base(world, e.owner).ore + delivered
 
       world
-      |> World.credit(e.owner, delivered)
+      |> World.deposit_ore(e.owner, delivered)
       |> update_entity(id, &%{&1 | cargo: 0, last_action: :unload})
-      |> note("#{e.owner}/H#{id} delivered #{delivered} ore. (#{e.owner}: #{total})")
+      |> note(
+        "#{e.owner}/H#{id} delivered #{delivered} ore to the forge. (stockpile: #{stockpile})"
+      )
+    else
+      update_entity(world, id, &%{&1 | last_action: :idle})
+    end
+  end
+
+  # Build / upgrade a tech tier at the base, spending the player's goods. Only
+  # valid standing on the base with the goods to afford it (resolved against the
+  # accumulating world, so two harvesters can't both spend the same goods).
+  defp resolve(world, id, {:build, tech}) do
+    e = entity(world, id)
+
+    if {e.x, e.y} == world.base and World.can_build?(world, e.owner, tech) do
+      cost = World.build_cost(world, e.owner, tech)
+
+      world
+      |> World.build(e.owner, tech)
+      |> update_entity(id, &%{&1 | last_action: :build})
+      |> note(
+        "#{e.owner} forged #{tech} L#{World.tech_level(World.base(world, e.owner), tech) + 1} (−#{cost} goods)."
+      )
     else
       update_entity(world, id, &%{&1 | last_action: :idle})
     end

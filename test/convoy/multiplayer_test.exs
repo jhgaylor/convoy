@@ -33,7 +33,7 @@ defmodule Convoy.MultiplayerTest do
 
     assert World.score(final, "p1") > 0
     assert World.score(final, "p2") > 0
-    assert World.total_delivered(final) == World.score(final, "p1") + World.score(final, "p2")
+    assert World.total_refined(final) == World.score(final, "p1") + World.score(final, "p2")
   end
 
   test "a multi-player world stays deterministic across runs" do

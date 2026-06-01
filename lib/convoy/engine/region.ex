@@ -11,7 +11,7 @@ defmodule Convoy.Engine.Region do
   entity's *owner's* program to collect that entity's intent, then resolves all
   intents authoritatively in entity-id order — so two players' harvesters
   competing for the same ore are arbitrated fairly (single-writer). Scoring is
-  per-player (`World.scores`).
+  per-player (`World.scoreboard/1`, from each player's base).
 
   Players join via `submit_player/5` (the CLI / HTTP API / browser upload). Each
   player's program is untrusted WebAssembly run with fuel metering
@@ -35,10 +35,9 @@ defmodule Convoy.Engine.Region do
   alias Convoy.Persistence
 
   @default_tick_ms 400
-  @default_fuel_budget 50_000
   @snapshot_every 50
-  # Bumped to 2: snapshot shape changed for multiplayer (players map + scores).
-  @snapshot_version 2
+  # Bumped to 3: world shape changed for the Forge (scores → per-player bases).
+  @snapshot_version 3
 
   defmodule State do
     @moduledoc false
@@ -188,7 +187,10 @@ defmodule Convoy.Engine.Region do
 
   def handle_cast({:set_speed, tick_ms}, state) do
     state = %{state | tick_ms: tick_ms}
-    state = if state.status == :running, do: state |> cancel_timer() |> schedule_tick(), else: state
+
+    state =
+      if state.status == :running, do: state |> cancel_timer() |> schedule_tick(), else: state
+
     broadcast(state)
     {:noreply, state}
   end
@@ -218,7 +220,6 @@ defmodule Convoy.Engine.Region do
            backend: backend,
            exec: exec,
            source: display,
-           fuel_budget: @default_fuel_budget,
            compile_error: nil
          })}
 
@@ -249,14 +250,19 @@ defmodule Convoy.Engine.Region do
 
   defp mark_error(state, player_id, msg) do
     case state.players[player_id] do
-      nil -> state
-      player -> %{state | players: Map.put(state.players, player_id, %{player | compile_error: msg})}
+      nil ->
+        state
+
+      player ->
+        %{state | players: Map.put(state.players, player_id, %{player | compile_error: msg})}
     end
   end
 
   # --- ticking ---
 
-  # Run each entity's owner program (per-player fuel) and resolve via the Sim.
+  # Run each entity's owner program and resolve via the Sim. The fuel budget is
+  # per-player and tech-driven (`World.fuel_budget/2`, primer §7) — derived from
+  # world state, so it stays deterministic across replays.
   defp advance(state) do
     world = state.world
 
@@ -264,20 +270,21 @@ defmodule Convoy.Engine.Region do
       world.entities
       |> Enum.sort_by(& &1.id)
       |> Enum.map_reduce(0, fn e, acc ->
-        {intent, used} = decide_for(state.players[e.owner], e, world)
+        budget = World.fuel_budget(world, e.owner)
+        {intent, used} = decide_for(state.players[e.owner], e, world, budget)
         {{e.id, intent}, acc + used}
       end)
 
     %{state | world: Sim.apply_intents(world, intents), last_fuel: fuel}
   end
 
-  defp decide_for(%{wasm: inst, fuel_budget: budget}, e, world) when not is_nil(inst) do
+  defp decide_for(%{wasm: inst}, e, world, budget) when not is_nil(inst) do
     {:ok, intent, used} = Wasm.decide(inst, e, world, budget)
     {intent, used}
   end
 
   # No program (player gone, or load failed): the entity idles.
-  defp decide_for(_player, _e, _world), do: {:idle, 0}
+  defp decide_for(_player, _e, _world, _budget), do: {:idle, 0}
 
   defp schedule_tick(state) do
     %{state | timer: Process.send_after(self(), :tick, state.tick_ms)}
@@ -347,7 +354,6 @@ defmodule Convoy.Engine.Region do
       backend: backend,
       exec: exec,
       source: persisted.source,
-      fuel_budget: persisted[:fuel_budget] || @default_fuel_budget,
       wasm: nil,
       compile_error: nil
     }
@@ -381,8 +387,7 @@ defmodule Convoy.Engine.Region do
     # Persist only the serializable bits of each player (not the live wasm pid).
     players =
       Map.new(state.players, fn {pid, p} ->
-        {pid,
-         %{backend: p.backend, exec: p.exec, source: p.source, fuel_budget: p.fuel_budget}}
+        {pid, %{backend: p.backend, exec: p.exec, source: p.source}}
       end)
 
     %{
@@ -411,8 +416,9 @@ defmodule Convoy.Engine.Region do
       status: state.status,
       tick_ms: state.tick_ms,
       last_fuel: state.last_fuel,
-      fuel_budget: @default_fuel_budget,
-      scores: state.world.scores,
+      fuel_budget: World.base_fuel_budget(),
+      scores: World.scoreboard(state.world),
+      bases: state.world.bases,
       players: player_summaries(state)
     }
   end
@@ -450,10 +456,10 @@ defmodule Convoy.Engine.Region do
       tick_ms: state.tick_ms,
       last_fuel: state.last_fuel,
       players: map_size(state.players),
-      scores: state.world.scores,
+      scores: World.scoreboard(state.world),
       entities: length(state.world.entities),
       ore_remaining: World.ore_remaining(state.world),
-      delivered: World.total_delivered(state.world),
+      delivered: World.total_refined(state.world),
       persist: state.persist,
       wasm_instances: length(wasm_pids),
       memory: mem + wasm_mem,

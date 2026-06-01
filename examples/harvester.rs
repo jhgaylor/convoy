@@ -1,9 +1,10 @@
-// A harvester that clears the FARTHEST deposit first, in Rust.
+// A harvester + forge that clears the FARTHEST deposit first, in Rust.
 //   mix convoy.run examples/harvester.rs --watch
 //
 // Export `decide`; return an intent code:
 //   1 harvest · 2 unload · 3 to_base · 4 to_resource (nearest) · 5 wander
-//   6 to_far_resource (farthest from base) · 10/11/12/13 move ±x/±y · else idle
+//   6 to_far_resource (farthest from base) · 10/11/12/13 move ±x/±y
+//   20/21/22 build refine/cargo/fuel (only at base, if affordable) · else idle
 #![no_std]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
@@ -19,9 +20,20 @@ pub extern "C" fn decide(
     _base_dx: i32,
     _base_dy: i32,
     _tick: i32,
+    _base_ore: i32,
+    _base_goods: i32,
+    can_refine: i32,
+    can_cargo: i32,
+    can_fuel: i32,
 ) -> i32 {
     if at_base != 0 && cargo > 0 {
-        return 2; // unload
+        return 2; // unload into the forge
+    }
+    if at_base != 0 {
+        // Empty-handed at base: spend refined goods to climb the tech ladder.
+        if can_refine != 0 { return 20; } // faster refining
+        if can_cargo != 0  { return 21; } // bigger cargo
+        if can_fuel != 0   { return 22; } // more fuel budget
     }
     if cargo >= cargo_max {
         return 3; // head to base

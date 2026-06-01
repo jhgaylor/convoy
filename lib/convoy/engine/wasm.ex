@@ -15,11 +15,16 @@ defmodule Convoy.Engine.Wasm do
   exported `decide` function with these `i32` params, in order:
 
       decide(cargo, cargo_max, at_base, on_resource,
-             res_dx, res_dy, base_dx, base_dy, tick) -> i32
+             res_dx, res_dy, base_dx, base_dy, tick,
+             base_ore, base_goods, can_refine, can_cargo, can_fuel) -> i32
 
   - `at_base`, `on_resource`: 0/1 flags
   - `res_dx`/`res_dy`: sign (-1/0/1) of the step toward the nearest ore
   - `base_dx`/`base_dy`: sign of the step toward base
+  - `base_ore`: raw ore in your base, awaiting refining
+  - `base_goods`: refined goods you can spend on upgrades
+  - `can_refine`/`can_cargo`/`can_fuel`: 0/1 — can you afford the next level of
+    that tech right now? (The host owns the cost math; you just check the flag.)
 
   The returned `i32` is an **intent code** the host resolves authoritatively
   (the player can never mutate the world — primer §3):
@@ -27,13 +32,23 @@ defmodule Convoy.Engine.Wasm do
   | code | intent |
   |------|--------|
   | 1 | harvest |
-  | 2 | unload |
+  | 2 | unload (deliver cargo into the base's stockpile) |
   | 3 | move toward base |
   | 4 | move toward nearest resource |
   | 5 | wander (deterministic) |
   | 6 | move toward the resource farthest from base |
   | 10/11/12/13 | move +x / -x / +y / -y |
+  | 20/21/22 | build refine / cargo / fuel (only at base, if affordable) |
   | anything else (incl. 0) | idle |
+
+  ## The Forge (primer §1)
+
+  `unload` delivers cargo into your base's raw `ore` stockpile. Each tick the
+  base refines up to `refine_rate` ore into `goods` (the leaderboard counts
+  lifetime refined). Standing on the base, return a build code to spend goods
+  on the tech ladder: **refine** (faster refining), **cargo** (every harvester
+  carries more), or **fuel** (a bigger per-tick fuel budget, capped). Refining
+  is rate-based so warm regions stay fast-forwardable (§5).
 
   ## Failure isolation
 
@@ -68,7 +83,8 @@ defmodule Convoy.Engine.Wasm do
   }
 
   @default_wat """
-  ;; Default harvester — the rule-DSL behaviour, written in WebAssembly.
+  ;; Default harvester + forge, written in WebAssembly. It harvests ore, delivers
+  ;; it to the base, and spends the refined goods to climb the tech ladder.
   ;; Compile your own (Rust, TinyGo, AssemblyScript, Zig, C, or WAT) to a `decide`
   ;; export with the ABI in the docs, and it runs under the same fuel budget.
   (module
@@ -78,13 +94,23 @@ defmodule Convoy.Engine.Wasm do
       (param $res_dx i32) (param $res_dy i32)
       (param $base_dx i32) (param $base_dy i32)
       (param $tick i32)
+      (param $base_ore i32) (param $base_goods i32)
+      (param $can_refine i32) (param $can_cargo i32) (param $can_fuel i32)
       (result i32)
 
-      ;; can_unload: at base AND carrying cargo -> unload (2)
+      ;; at base, carrying cargo -> unload it into the forge (2)
       (if (i32.and (local.get $at_base) (i32.gt_s (local.get $cargo) (i32.const 0)))
         (then (return (i32.const 2))))
 
-      ;; cargo_full: cargo >= cargo_max -> head to base (3)
+      ;; at base, empty-handed -> spend goods on the cheapest affordable upgrade
+      ;; (refine 20 > cargo 21 > fuel 22); falls through to harvest if broke.
+      (if (local.get $at_base)
+        (then
+          (if (local.get $can_refine) (then (return (i32.const 20))))
+          (if (local.get $can_cargo)  (then (return (i32.const 21))))
+          (if (local.get $can_fuel)   (then (return (i32.const 22))))))
+
+      ;; cargo full -> head to base (3)
       (if (i32.ge_s (local.get $cargo) (local.get $cargo_max))
         (then (return (i32.const 3))))
 
@@ -178,6 +204,7 @@ defmodule Convoy.Engine.Wasm do
 
   defp build_view(entity, world) do
     pos = {entity.x, entity.y}
+    owner = Map.get(entity, :owner)
     {bdx, bdy} = World.step_toward(pos, world.base)
 
     {rdx, rdy} =
@@ -188,8 +215,26 @@ defmodule Convoy.Engine.Wasm do
 
     at_base = bool(pos == world.base)
     on_resource = bool(World.resource_at(world, pos) > 0)
+    base = World.base(world, owner)
 
-    [entity.cargo, entity.cargo_max, at_base, on_resource, rdx, rdy, bdx, bdy, world.tick]
+    # The Forge economy: stockpile + spendable goods, plus precomputed
+    # affordability flags so bots build without knowing the cost formula.
+    [
+      entity.cargo,
+      entity.cargo_max,
+      at_base,
+      on_resource,
+      rdx,
+      rdy,
+      bdx,
+      bdy,
+      world.tick,
+      base.ore,
+      base.goods,
+      bool(World.can_build?(world, owner, :refine)),
+      bool(World.can_build?(world, owner, :cargo)),
+      bool(World.can_build?(world, owner, :fuel))
+    ]
   end
 
   # --- guest → host intent ---
@@ -208,6 +253,11 @@ defmodule Convoy.Engine.Wasm do
   defp code_to_intent(11, _e, _w), do: {:move, {-1, 0}}
   defp code_to_intent(12, _e, _w), do: {:move, {0, 1}}
   defp code_to_intent(13, _e, _w), do: {:move, {0, -1}}
+  # The Forge: spend goods to climb the tech ladder (only resolves at base, if
+  # affordable — the Sim validates; otherwise the entity idles its turn).
+  defp code_to_intent(20, _e, _w), do: {:build, :refine}
+  defp code_to_intent(21, _e, _w), do: {:build, :cargo}
+  defp code_to_intent(22, _e, _w), do: {:build, :fuel}
   defp code_to_intent(_other, _e, _w), do: :idle
 
   # Step toward a target resource (or home if the map is empty).

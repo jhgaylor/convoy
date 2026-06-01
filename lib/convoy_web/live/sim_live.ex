@@ -60,7 +60,8 @@ defmodule ConvoyWeb.SimLive do
   end
 
   def handle_event("validate_upload", params, socket) do
-    {:noreply, assign(socket, :upload_player, clean_player(params["player"], socket.assigns.upload_player))}
+    {:noreply,
+     assign(socket, :upload_player, clean_player(params["player"], socket.assigns.upload_player))}
   end
 
   def handle_event("upload_bot", params, socket) do
@@ -158,6 +159,7 @@ defmodule ConvoyWeb.SimLive do
     |> assign(:fuel_budget, snap.fuel_budget)
     |> assign(:last_fuel, snap.last_fuel)
     |> assign(:scores, snap.scores)
+    |> assign(:bases, snap.bases)
     |> assign(:players, snap.players)
   end
 
@@ -165,12 +167,47 @@ defmodule ConvoyWeb.SimLive do
   # the server compiles (vs WAT/Rules which need none).
   defp language_tabs do
     [
-      %{id: :rust, label: "Rust", ext: "rs", lang: "rust", toolchain?: true, code: Compile.template(:rust)},
-      %{id: :tinygo, label: "Go", ext: "go", lang: "tinygo", toolchain?: true, code: Compile.template(:tinygo)},
-      %{id: :assemblyscript, label: "AssemblyScript", ext: "ts", lang: "assemblyscript", toolchain?: true, code: Compile.template(:assemblyscript)},
-      %{id: :zig, label: "Zig", ext: "zig", lang: "zig", toolchain?: true, code: Compile.template(:zig)},
+      %{
+        id: :rust,
+        label: "Rust",
+        ext: "rs",
+        lang: "rust",
+        toolchain?: true,
+        code: Compile.template(:rust)
+      },
+      %{
+        id: :tinygo,
+        label: "Go",
+        ext: "go",
+        lang: "tinygo",
+        toolchain?: true,
+        code: Compile.template(:tinygo)
+      },
+      %{
+        id: :assemblyscript,
+        label: "AssemblyScript",
+        ext: "ts",
+        lang: "assemblyscript",
+        toolchain?: true,
+        code: Compile.template(:assemblyscript)
+      },
+      %{
+        id: :zig,
+        label: "Zig",
+        ext: "zig",
+        lang: "zig",
+        toolchain?: true,
+        code: Compile.template(:zig)
+      },
       %{id: :c, label: "C", ext: "c", lang: "c", toolchain?: true, code: Compile.template(:c)},
-      %{id: :wat, label: "WAT", ext: "wat", lang: "wat", toolchain?: false, code: Wasm.default_source()}
+      %{
+        id: :wat,
+        label: "WAT",
+        ext: "wat",
+        lang: "wat",
+        toolchain?: false,
+        code: Wasm.default_source()
+      }
     ]
   end
 
@@ -199,7 +236,8 @@ defmodule ConvoyWeb.SimLive do
       <header class="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 class="text-xl font-bold tracking-tight">
-            <span class="text-amber-400">Forge</span> &amp; <span class="text-sky-400">Convoy</span>
+            <span class="text-amber-400">Forge</span>
+            &amp; <span class="text-sky-400">Convoy</span>
             <span class="ml-2 text-xs font-normal text-slate-500">region {@region_id}</span>
             <.link navigate={~p"/admin"} class="ml-2 text-xs font-normal text-sky-400 hover:underline">
               overview
@@ -211,7 +249,7 @@ defmodule ConvoyWeb.SimLive do
         </div>
         <div class="flex items-center gap-4 text-sm">
           <.stat label="tick" value={@world.tick} />
-          <.stat label="delivered" value={World.total_delivered(@world)} accent="text-emerald-400" />
+          <.stat label="refined" value={World.total_refined(@world)} accent="text-emerald-400" />
           <.stat label="ore left" value={World.ore_remaining(@world)} accent="text-amber-400" />
           <.stat label="players" value={map_size(@scores)} accent="text-sky-400" />
           <.stat label="fuel/tick" value={@last_fuel} accent="text-fuchsia-400" />
@@ -234,14 +272,18 @@ defmodule ConvoyWeb.SimLive do
             region_id={@region_id}
             base_url={@base_url}
           />
-          <.upload_panel uploads={@uploads} upload_player={@upload_player} upload_error={@upload_error} />
+          <.upload_panel
+            uploads={@uploads}
+            upload_player={@upload_player}
+            upload_error={@upload_error}
+          />
           <.abi_panel fuel_budget={@fuel_budget} />
         </section>
 
         <%!-- right: the world --%>
         <section class="space-y-4">
           <.controls status={@status} speeds={@speeds} tick_ms={@tick_ms} seed={@seed} />
-          <.scoreboard scores={@scores} players={@players} my_player={@my_player} />
+          <.scoreboard bases={@bases} players={@players} my_player={@my_player} />
           <.grid world={@world} />
           <.entities world={@world} />
           <.event_log world={@world} />
@@ -286,7 +328,7 @@ defmodule ConvoyWeb.SimLive do
       </div>
 
       <div class="mt-1 text-[10px] text-slate-500">
-        <%= if @tab.toolchain?, do: "compiled server-side", else: "no toolchain needed" %>
+        {if @tab.toolchain?, do: "compiled server-side", else: "no toolchain needed"}
       </div>
 
       <div class="text-[10px] uppercase tracking-wide text-slate-500 mt-3 mb-1">
@@ -308,7 +350,11 @@ defmodule ConvoyWeb.SimLive do
 
   defp upload_panel(assigns) do
     ~H"""
-    <form phx-change="validate_upload" phx-submit="upload_bot" class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+    <form
+      phx-change="validate_upload"
+      phx-submit="upload_bot"
+      class="bg-slate-900 border border-slate-800 rounded-lg p-4"
+    >
       <div class="flex items-center justify-between">
         <h2 class="text-sm font-semibold text-slate-200">…or upload a file</h2>
         <label class="text-xs text-slate-400 flex items-center gap-1">
@@ -334,12 +380,16 @@ defmodule ConvoyWeb.SimLive do
         </button>
       </div>
       <%= for entry <- @uploads.bot.entries do %>
-        <p class="mt-1 text-[11px] text-emerald-300 font-mono">{entry.client_name} · {entry.progress}%</p>
+        <p class="mt-1 text-[11px] text-emerald-300 font-mono">
+          {entry.client_name} · {entry.progress}%
+        </p>
         <%= for err <- upload_errors(@uploads.bot, entry) do %>
           <p class="text-[11px] text-rose-400">{error_to_string(err)}</p>
         <% end %>
       <% end %>
-      <p :if={@upload_error} class="mt-2 text-[11px] font-mono text-rose-300 whitespace-pre-wrap">⛔ {@upload_error}</p>
+      <p :if={@upload_error} class="mt-2 text-[11px] font-mono text-rose-300 whitespace-pre-wrap">
+        ⛔ {@upload_error}
+      </p>
     </form>
     """
   end
@@ -352,16 +402,25 @@ defmodule ConvoyWeb.SimLive do
       <summary class="cursor-pointer text-slate-300 font-semibold">The decide ABI</summary>
       <div class="mt-2 space-y-2">
         <p>
-          Each tick, per harvester, the sim calls your <code class="text-fuchsia-300">decide</code> with a
-          read-only view and you return an intent code. It runs under a
-          <code class="text-fuchsia-300">{@fuel_budget}</code>-instruction fuel budget; zero host imports.
+          Each tick, per harvester, the sim calls your <code class="text-fuchsia-300">decide</code>
+          with a
+          read-only view and you return an intent code. It runs under a <code class="text-fuchsia-300">{@fuel_budget}</code>-instruction fuel budget; zero host imports.
         </p>
         <pre class="bg-slate-950 rounded p-2 text-fuchsia-200">decide(cargo, cargo_max, at_base, on_resource,
-       res_dx, res_dy, base_dx, base_dy, tick) -> code</pre>
+       res_dx, res_dy, base_dx, base_dy, tick,
+       base_ore, base_goods, can_refine, can_cargo, can_fuel) -> code</pre>
         <div>
           <div class="text-slate-300">return code → intent</div>
-          <code class="text-fuchsia-300">1 harvest · 2 unload · 3 to_base · 4 to_resource · 5 wander · 6 to_far_resource · 10-13 move ±x/±y · else idle</code>
+          <code class="text-fuchsia-300">
+            1 harvest · 2 unload · 3 to_base · 4 to_resource · 5 wander · 6 to_far_resource · 10-13 move ±x/±y · 20/21/22 build refine/cargo/fuel · else idle
+          </code>
         </div>
+        <p class="text-slate-400">
+          <span class="text-amber-300">The Forge:</span>
+          unload drops ore in your base; it refines into
+          goods each tick; spend goods at base to climb the tech ladder
+          (<code>can_*</code> tells you what you can afford).
+        </p>
         <p class="text-slate-500">Full guide: <code>docs/writing-bots.md</code>.</p>
       </div>
     </details>
@@ -377,16 +436,27 @@ defmodule ConvoyWeb.SimLive do
     ~H"""
     <div class="flex flex-wrap items-center gap-3 text-sm">
       <%= if @status == :running do %>
-        <button phx-click="pause" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">⏸ Pause</button>
+        <button phx-click="pause" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">
+          ⏸ Pause
+        </button>
       <% else %>
-        <button phx-click="play" class="px-3 py-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-sm">▶ Play</button>
+        <button
+          phx-click="play"
+          class="px-3 py-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-sm"
+        >
+          ▶ Play
+        </button>
       <% end %>
-      <button phx-click="step" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">⏭ Step</button>
+      <button phx-click="step" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">
+        ⏭ Step
+      </button>
       <button
         phx-click="reset"
         data-confirm="Reset this shared world (keeps players, restarts the map)?"
         class="px-3 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-sm"
-      >↻ Reset</button>
+      >
+        ↻ Reset
+      </button>
       <div class="flex items-center gap-1">
         <span class="text-xs text-slate-400 mr-1">speed</span>
         <%= for {label, ms} <- @speeds do %>
@@ -398,12 +468,19 @@ defmodule ConvoyWeb.SimLive do
               @tick_ms == ms && "bg-sky-500 text-slate-950",
               @tick_ms != ms && "bg-slate-800 hover:bg-slate-700 text-slate-300"
             ]}
-          >{label}</button>
+          >
+            {label}
+          </button>
         <% end %>
       </div>
       <form phx-submit="set_seed" class="flex items-center gap-1">
         <span class="text-xs text-slate-400">seed</span>
-        <input type="text" name="seed" value={@seed} class="w-14 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono" />
+        <input
+          type="text"
+          name="seed"
+          value={@seed}
+          class="w-14 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono"
+        />
       </form>
     </div>
     """
@@ -422,26 +499,47 @@ defmodule ConvoyWeb.SimLive do
     """
   end
 
-  attr :scores, :map, required: true
+  attr :bases, :map, required: true
   attr :players, :map, required: true
   attr :my_player, :string, default: nil
 
   defp scoreboard(assigns) do
     ~H"""
     <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
-      <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Players</div>
-      <%= if @scores == %{} do %>
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-xs uppercase tracking-wide text-slate-400">Players · the Forge</div>
+        <div class="text-[10px] text-slate-500 font-mono">refined · goods · ore · R/C/F tech</div>
+      </div>
+      <%= if @bases == %{} do %>
         <div class="text-xs text-slate-500">No players yet — submit a bot to join.</div>
       <% end %>
       <div class="space-y-1">
-        <%= for {player, score} <- Enum.sort_by(@scores, fn {_p, s} -> -s end) do %>
+        <%= for {player, base} <- Enum.sort_by(@bases, fn {_p, b} -> -b.refined_total end) do %>
           <% color = player_color(player) %>
           <div class="flex items-center gap-2 text-sm">
             <span class={["w-2.5 h-2.5 rounded-full", color.dot]}></span>
             <span class={["font-mono", color.text]}>{player}</span>
             <span :if={player == @my_player} class="text-[10px] text-slate-500">(you)</span>
-            <span :if={err = get_in(@players, [player, :compile_error])} class="text-[10px] text-rose-400" title={err}>⛔</span>
-            <span class="ml-auto font-mono font-bold text-slate-100">{score}</span>
+            <span
+              :if={err = get_in(@players, [player, :compile_error])}
+              class="text-[10px] text-rose-400"
+              title={err}
+            >
+              ⛔
+            </span>
+            <span class="ml-auto flex items-center gap-2 font-mono text-xs">
+              <span class="text-slate-500" title="raw ore stockpile">⛏ {base.ore}</span>
+              <span class="text-sky-300" title="refined goods to spend">◆ {base.goods}</span>
+              <span class="text-slate-500" title="tech: refine / cargo / fuel">
+                R{base.tech.refine}·C{base.tech.cargo}·F{base.tech.fuel}
+              </span>
+              <span
+                class="font-bold text-emerald-300 w-12 text-right"
+                title="lifetime refined (score)"
+              >
+                {base.refined_total}
+              </span>
+            </span>
           </div>
         <% end %>
       </div>
@@ -460,7 +558,10 @@ defmodule ConvoyWeb.SimLive do
       <%= for y <- 0..(@world.height - 1), x <- 0..(@world.width - 1) do %>
         <% cell = cell_info(@world, {x, y}) %>
         <div
-          class={["aspect-square flex items-center justify-center text-xs font-bold relative", cell.bg]}
+          class={[
+            "aspect-square flex items-center justify-center text-xs font-bold relative",
+            cell.bg
+          ]}
           title={cell.title}
         >
           {cell.glyph}

@@ -27,6 +27,21 @@ defmodule Convoy.Engine.World do
           last_action: atom()
         }
 
+  @typedoc """
+  A player's **base** — the Forge economy (primer §1). Delivered ore lands in
+  `ore` (raw stockpile), the base refines it into `goods` at a tech-driven rate
+  each tick, and `goods` are spent to climb the tech ladder. `refined_total` is
+  the lifetime amount refined — the leaderboard score, monotonic, untouched by
+  spending so the tech climb never costs you rank.
+  """
+  @type tech :: :refine | :cargo | :fuel
+  @type base :: %{
+          ore: non_neg_integer(),
+          goods: non_neg_integer(),
+          refined_total: non_neg_integer(),
+          tech: %{tech() => non_neg_integer()}
+        }
+
   defstruct region_id: "alpha",
             seed: 1,
             width: 16,
@@ -35,7 +50,7 @@ defmodule Convoy.Engine.World do
             base: {0, 0},
             resources: %{},
             entities: [],
-            scores: %{},
+            bases: %{},
             next_entity_id: 1,
             replenished: 0,
             events: []
@@ -49,7 +64,7 @@ defmodule Convoy.Engine.World do
           base: pos(),
           resources: %{pos() => non_neg_integer()},
           entities: [entity()],
-          scores: %{player_id() => non_neg_integer()},
+          bases: %{player_id() => base()},
           next_entity_id: pos_integer(),
           replenished: non_neg_integer(),
           events: [String.t()]
@@ -60,6 +75,20 @@ defmodule Convoy.Engine.World do
   @harvesters 3
   @cargo_max 5
   @default_player "p1"
+
+  # --- the Forge: refining + tech ladder (primer §1) ---
+  #
+  # All balancing knobs live here so retuning the economy never touches a bot:
+  # the WASM ABI hands player code precomputed affordability flags, not costs.
+  @base_refine_rate 1
+  @cargo_step 5
+  @base_fuel_budget 50_000
+  @fuel_step 25_000
+  @max_fuel_level 4
+  # cost(level) = base * (level + 1): each tier costs more, so refine/cargo are
+  # self-limiting; fuel is also hard-capped at @max_fuel_level (never pay-to-win).
+  @build_cost %{refine: 10, cargo: 15, fuel: 25}
+  @max_level %{fuel: @max_fuel_level}
   # Spawn a fresh deposit when the map drops to this many nodes (or fewer), so
   # a region can never be mined to a dead end.
   @replenish_threshold 1
@@ -92,7 +121,7 @@ defmodule Convoy.Engine.World do
       base: base,
       resources: resources,
       entities: [],
-      scores: %{},
+      bases: %{},
       next_entity_id: 1,
       events: ["Region #{region_id} initialized from seed #{seed}."]
     }
@@ -114,8 +143,8 @@ defmodule Convoy.Engine.World do
   @spec add_player(t(), player_id(), pos_integer()) :: t()
   def add_player(world, player_id, count \\ @harvesters)
 
-  def add_player(%World{scores: scores} = world, player_id, _count)
-      when is_map_key(scores, player_id),
+  def add_player(%World{bases: bases} = world, player_id, _count)
+      when is_map_key(bases, player_id),
       do: world
 
   def add_player(%World{} = world, player_id, count) do
@@ -139,11 +168,14 @@ defmodule Convoy.Engine.World do
     %{
       world
       | entities: world.entities ++ new_entities,
-        scores: Map.put(world.scores, player_id, 0),
+        bases: Map.put(world.bases, player_id, new_base()),
         next_entity_id: next_id,
         events: ["Player #{player_id} joined with #{count} harvesters." | world.events]
     }
   end
+
+  # A freshly-joined player's base: empty stockpile, no goods, tech at level 0.
+  defp new_base, do: %{ore: 0, goods: 0, refined_total: 0, tech: %{refine: 0, cargo: 0, fuel: 0}}
 
   @doc """
   Remove a player from the world: drop their harvesters and their score.
@@ -151,11 +183,11 @@ defmodule Convoy.Engine.World do
   """
   @spec remove_player(t(), player_id()) :: t()
   def remove_player(%World{} = world, player_id) do
-    if Map.has_key?(world.scores, player_id) do
+    if Map.has_key?(world.bases, player_id) do
       %{
         world
         | entities: Enum.reject(world.entities, &(&1.owner == player_id)),
-          scores: Map.delete(world.scores, player_id),
+          bases: Map.delete(world.bases, player_id),
           events: ["Player #{player_id} was kicked." | world.events]
       }
     else
@@ -163,23 +195,144 @@ defmodule Convoy.Engine.World do
     end
   end
 
-  @doc "Credit ore to a player's score."
-  @spec credit(t(), player_id(), non_neg_integer()) :: t()
-  def credit(%World{} = world, player_id, amount) do
-    %{world | scores: Map.update(world.scores, player_id, amount, &(&1 + amount))}
+  @doc """
+  A player's base (the empty base if they're unknown, so callers never crash on
+  a missing or nil player — e.g. synthetic entities in unit tests).
+  """
+  @spec base(t(), player_id() | nil) :: base()
+  def base(%World{bases: bases}, player_id), do: Map.get(bases, player_id, new_base())
+
+  @doc """
+  Deliver `amount` ore into a player's raw stockpile (`base.ore`). This is what
+  `unload` does — the base refines it into goods over the following ticks.
+  """
+  @spec deposit_ore(t(), player_id(), non_neg_integer()) :: t()
+  def deposit_ore(%World{} = world, player_id, amount) do
+    update_base(world, player_id, fn b -> %{b | ore: b.ore + amount} end)
   end
 
-  @doc "A player's delivered total (0 if unknown)."
+  @doc "A player's leaderboard score = lifetime ore refined (0 if unknown)."
   @spec score(t(), player_id()) :: non_neg_integer()
-  def score(%World{scores: scores}, player_id), do: Map.get(scores, player_id, 0)
+  def score(%World{} = world, player_id), do: base(world, player_id).refined_total
 
-  @doc "Ore delivered across all players."
-  @spec total_delivered(t()) :: non_neg_integer()
-  def total_delivered(%World{scores: scores}), do: scores |> Map.values() |> Enum.sum()
+  @doc "Per-player leaderboard map, `%{player => refined_total}`."
+  @spec scoreboard(t()) :: %{player_id() => non_neg_integer()}
+  def scoreboard(%World{bases: bases}), do: Map.new(bases, fn {p, b} -> {p, b.refined_total} end)
+
+  @doc "Lifetime ore refined across all players (the headline number)."
+  @spec total_refined(t()) :: non_neg_integer()
+  def total_refined(%World{bases: bases}),
+    do: bases |> Map.values() |> Enum.map(& &1.refined_total) |> Enum.sum()
+
+  @doc "Raw ore sitting in every base's stockpile, not yet refined."
+  @spec total_stockpile(t()) :: non_neg_integer()
+  def total_stockpile(%World{bases: bases}),
+    do: bases |> Map.values() |> Enum.map(& &1.ore) |> Enum.sum()
 
   @doc "Player ids present in the world."
   @spec players(t()) :: [player_id()]
-  def players(%World{scores: scores}), do: Map.keys(scores)
+  def players(%World{bases: bases}), do: Map.keys(bases)
+
+  # --- the Forge: refining + tech ladder ---
+
+  @doc """
+  Refine every base by one tick: convert up to `refine_rate` ore into goods.
+
+  Pure and **rate-based** (primer §5) — over N idle ticks the output is the
+  closed form `min(stockpile, N · rate)`, which is exactly what makes a warm
+  region fast-forwardable. The sim calls this once per tick after resolving
+  intents; no events (it would flood the log every tick).
+  """
+  @spec refine_all(t()) :: t()
+  def refine_all(%World{bases: bases} = world) do
+    %{world | bases: Map.new(bases, fn {p, b} -> {p, refine_one(b)} end)}
+  end
+
+  defp refine_one(b) do
+    n = min(b.ore, refine_rate(b))
+    %{b | ore: b.ore - n, goods: b.goods + n, refined_total: b.refined_total + n}
+  end
+
+  defp refine_rate(b), do: @base_refine_rate + tech_level(b, :refine)
+
+  @doc "The goods cost of a player's NEXT level in `tech`."
+  @spec build_cost(t(), player_id(), tech()) :: pos_integer()
+  def build_cost(%World{} = world, player_id, tech) when is_map_key(@build_cost, tech) do
+    level = tech_level(base(world, player_id), tech)
+    @build_cost[tech] * (level + 1)
+  end
+
+  @doc """
+  Can `player_id` afford and is allowed to build the next level of `tech`?
+  False if they lack the goods or the tech is capped (see `@max_level`). This
+  is precomputed and handed to player code as a flag, so bots never need to
+  know the cost formula.
+  """
+  @spec can_build?(t(), player_id() | nil, tech()) :: boolean()
+  def can_build?(%World{} = world, player_id, tech) when is_map_key(@build_cost, tech) do
+    b = base(world, player_id)
+    level = tech_level(b, tech)
+    capped? = match?(%{^tech => max} when level >= max, @max_level)
+    not capped? and b.goods >= @build_cost[tech] * (level + 1)
+  end
+
+  def can_build?(_world, _player, _tech), do: false
+
+  @doc """
+  Build the next level of `tech` for a player: spend the goods and raise the
+  level. Raising `cargo` also bumps `cargo_max` on every one of that player's
+  harvesters. Assumes affordability was already checked (`can_build?/3`) — the
+  sim validates before calling, so this is a pure state transition.
+  """
+  @spec build(t(), player_id(), tech()) :: t()
+  def build(%World{} = world, player_id, tech) when is_map_key(@build_cost, tech) do
+    cost = build_cost(world, player_id, tech)
+
+    world
+    |> update_base(player_id, fn b ->
+      %{b | goods: b.goods - cost, tech: Map.update(b.tech, tech, 1, &(&1 + 1))}
+    end)
+    |> apply_tech(player_id, tech)
+  end
+
+  # cargo upgrades change the world (every owned harvester's capacity); refine
+  # and fuel are read live from the base each tick, so nothing else to apply.
+  defp apply_tech(world, player_id, :cargo) do
+    cap = cargo_max_for(base(world, player_id))
+
+    entities =
+      Enum.map(world.entities, fn e ->
+        if e.owner == player_id, do: %{e | cargo_max: cap}, else: e
+      end)
+
+    %{world | entities: entities}
+  end
+
+  defp apply_tech(world, _player_id, _tech), do: world
+
+  @doc "A player's per-harvester cargo capacity given their cargo tech level."
+  @spec cargo_max_for(base()) :: pos_integer()
+  def cargo_max_for(b), do: @cargo_max + tech_level(b, :cargo) * @cargo_step
+
+  @doc """
+  A player's per-tick fuel budget (primer §7: compute as a tech reward, capped).
+  Derived from their `fuel` tech level so replays stay deterministic.
+  """
+  @spec fuel_budget(t(), player_id() | nil) :: pos_integer()
+  def fuel_budget(%World{} = world, player_id),
+    do: @base_fuel_budget + tech_level(base(world, player_id), :fuel) * @fuel_step
+
+  @doc "The floor (level-0) fuel budget, for display."
+  @spec base_fuel_budget() :: pos_integer()
+  def base_fuel_budget, do: @base_fuel_budget
+
+  @doc "A base's level in `tech` (0 if absent)."
+  @spec tech_level(base(), tech()) :: non_neg_integer()
+  def tech_level(b, tech), do: Map.get(b.tech, tech, 0)
+
+  defp update_base(%World{} = world, player_id, fun) do
+    %{world | bases: Map.update(world.bases, player_id, fun.(new_base()), fun)}
+  end
 
   @doc "The ore amount a freshly-spawned (or generated) deposit holds."
   @spec resource_amount() :: pos_integer()

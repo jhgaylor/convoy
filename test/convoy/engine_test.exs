@@ -42,13 +42,13 @@ defmodule Convoy.EngineTest do
     assert run_a == run_b
   end
 
-  test "harvesters actually deliver ore to the base over time" do
+  test "harvesters deliver ore and the base refines it into goods over time" do
     final = solo(7) |> Sim.run(rules(), 200)
-    assert World.total_delivered(final) > 0
+    assert World.total_refined(final) > 0
     assert final.tick == 200
   end
 
-  test "the sim conserves ore: delivered + in-cargo + in-ground == initial + spawned" do
+  test "the sim conserves ore: refined + stockpile + in-cargo + in-ground == initial + spawned" do
     rules = rules()
     initial = solo(3)
     total = World.ore_remaining(initial)
@@ -57,7 +57,10 @@ defmodule Convoy.EngineTest do
     in_cargo = final.entities |> Enum.map(& &1.cargo) |> Enum.sum()
     spawned = final.replenished * World.resource_amount()
 
-    assert World.total_delivered(final) + in_cargo + World.ore_remaining(final) == total + spawned
+    # Delivered ore now splits into raw stockpile + lifetime-refined; every ore
+    # unit is in exactly one of: ground, cargo, base stockpile, or refined.
+    assert World.total_refined(final) + World.total_stockpile(final) + in_cargo +
+             World.ore_remaining(final) == total + spawned
   end
 
   test "a dwindling map spawns a fresh deposit at its last node" do
@@ -98,5 +101,83 @@ defmodule Convoy.EngineTest do
       assert e.x in 0..(final.width - 1)
       assert e.y in 0..(final.height - 1)
     end
+  end
+
+  # --- the Forge: refining + tech ladder (primer §1) ---
+
+  # Hand a player goods directly, to test building without harvesting first.
+  defp grant_goods(world, player, n) do
+    %{world | bases: Map.update!(world.bases, player, &%{&1 | goods: &1.goods + n})}
+  end
+
+  test "unload stocks raw ore; the base refines it into goods over ticks" do
+    world = solo(1) |> World.deposit_ore("p1", 10)
+    assert World.base(world, "p1").ore == 10
+
+    world = World.refine_all(world)
+    b = World.base(world, "p1")
+    # rate 1 at refine level 0: one ore becomes one good per tick.
+    assert b.ore == 9
+    assert b.goods == 1
+    assert b.refined_total == 1
+  end
+
+  test "building refine spends goods, raises the level, and speeds refining" do
+    world = solo(1) |> grant_goods("p1", 50)
+    assert World.can_build?(world, "p1", :refine)
+    assert World.build_cost(world, "p1", :refine) == 10
+
+    world = World.build(world, "p1", :refine)
+    b = World.base(world, "p1")
+    assert b.tech.refine == 1
+    assert b.goods == 40
+
+    # refine rate is now 2/tick (base 1 + level 1).
+    world = world |> World.deposit_ore("p1", 10) |> World.refine_all()
+    assert World.base(world, "p1").ore == 8
+  end
+
+  test "building cargo raises cargo_max on all of the player's harvesters" do
+    world = solo(1) |> grant_goods("p1", 50) |> World.build("p1", :cargo)
+    assert World.base(world, "p1").tech.cargo == 1
+
+    caps = world.entities |> Enum.filter(&(&1.owner == "p1")) |> Enum.map(& &1.cargo_max)
+    # base 5 + one level * step 5.
+    assert Enum.all?(caps, &(&1 == 10))
+  end
+
+  test "building fuel raises the budget and is capped (never pay-to-win)" do
+    assert World.fuel_budget(solo(1), "p1") == 50_000
+
+    world = solo(1) |> grant_goods("p1", 1000)
+
+    # Climb fuel to its cap, building as long as the sim says it's affordable.
+    world =
+      Enum.reduce_while(1..10, world, fn _i, w ->
+        if World.can_build?(w, "p1", :fuel),
+          do: {:cont, World.build(w, "p1", :fuel)},
+          else: {:halt, w}
+      end)
+
+    b = World.base(world, "p1")
+    assert b.tech.fuel == 4
+    assert World.fuel_budget(world, "p1") == 150_000
+    refute World.can_build?(world, "p1", :fuel)
+  end
+
+  test "can_build? is false when broke" do
+    world = solo(1)
+    refute World.can_build?(world, "p1", :refine)
+    refute World.can_build?(world, "p1", :cargo)
+    refute World.can_build?(world, "p1", :fuel)
+  end
+
+  test "building is bit-identical across independent runs (replay holds with the Forge)" do
+    rules = rules()
+    a = solo(11) |> Sim.run(rules, 400)
+    b = solo(11) |> Sim.run(rules, 400)
+    assert a == b
+    # the default bot forges, so the run actually exercises the tech ladder.
+    assert World.base(a, "p1").tech.refine > 0
   end
 end

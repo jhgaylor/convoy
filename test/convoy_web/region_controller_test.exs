@@ -19,7 +19,9 @@ defmodule ConvoyWeb.RegionControllerTest do
 
   test "upload: language inferred from ?file extension", %{conn: conn} do
     id = "up-#{System.unique_integer([:positive])}"
-    wat = "(module (func (export \"decide\") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 4)))"
+
+    wat =
+      "(module (func (export \"decide\") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 4)))"
 
     conn =
       conn
@@ -68,7 +70,9 @@ defmodule ConvoyWeb.RegionControllerTest do
 
   test "POST with WAT loads on the wasm backend", %{conn: conn} do
     id = "test-#{System.unique_integer([:positive])}"
-    wat = "(module (func (export \"decide\") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 4)))"
+
+    wat =
+      "(module (func (export \"decide\") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 4)))"
 
     conn = post(conn, ~p"/api/region/#{id}/program", %{language: "wat", source: wat})
     assert %{"status" => "ok", "backend" => "wasm"} = json_response(conn, 200)
@@ -88,12 +92,21 @@ defmodule ConvoyWeb.RegionControllerTest do
 
   test "base64 wasm upload is decoded and loaded", %{conn: conn} do
     id = "test-#{System.unique_integer([:positive])}"
-    wat = "(module (func (export \"decide\") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 4)))"
+
+    wat =
+      "(module (func (export \"decide\") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 4)))"
+
     # WAT compiled? No — for upload path we send raw bytes; here send the WAT
     # text base64'd, which Wasmtime still accepts as a text module.
     b64 = Base.encode64(wat)
 
-    conn = post(conn, ~p"/api/region/#{id}/program", %{language: "wasm", source: b64, encoding: "base64"})
+    conn =
+      post(conn, ~p"/api/region/#{id}/program", %{
+        language: "wasm",
+        source: b64,
+        encoding: "base64"
+      })
+
     assert %{"status" => "ok", "backend" => "wasm"} = json_response(conn, 200)
   end
 end

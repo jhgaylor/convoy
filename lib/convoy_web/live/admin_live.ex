@@ -49,7 +49,12 @@ defmodule ConvoyWeb.AdminLive do
 
   def handle_event("toggle", %{"id" => id}, socket) do
     expanded = socket.assigns.expanded
-    expanded = if MapSet.member?(expanded, id), do: MapSet.delete(expanded, id), else: MapSet.put(expanded, id)
+
+    expanded =
+      if MapSet.member?(expanded, id),
+        do: MapSet.delete(expanded, id),
+        else: MapSet.put(expanded, id)
+
     {:noreply, assign(socket, :expanded, expanded)}
   end
 
@@ -170,7 +175,11 @@ defmodule ConvoyWeb.AdminLive do
             value={if @system.scheduler, do: "#{round(@system.scheduler * 100)}%", else: "—"}
             accent="text-emerald-400"
           />
-          <.metric label="VM memory" value={mb(@system.vm_memory)} sub={"sims #{mb(@system.sim_memory)}"} />
+          <.metric
+            label="VM memory"
+            value={mb(@system.vm_memory)}
+            sub={"sims #{mb(@system.sim_memory)}"}
+          />
           <.metric label="processes" value={@system.processes} sub={"runq #{@system.run_queue}"} />
         </section>
 
@@ -200,11 +209,15 @@ defmodule ConvoyWeb.AdminLive do
                       phx-value-id={r.region_id}
                       class="text-slate-500 hover:text-slate-300 mr-1 w-3 inline-block"
                       title="show players"
-                    >{if MapSet.member?(@expanded, r.region_id), do: "▾", else: "▸"}</button>
+                    >
+                      {if MapSet.member?(@expanded, r.region_id), do: "▾", else: "▸"}
+                    </button>
                     <.link navigate={~p"/?region=#{r.region_id}"} class="text-sky-300 hover:underline">
                       {r.region_id}
                     </.link>
-                    <span :if={r.persist} class="ml-1 text-[10px] text-slate-600" title="persisted">●</span>
+                    <span :if={r.persist} class="ml-1 text-[10px] text-slate-600" title="persisted">
+                      ●
+                    </span>
                   </td>
                   <td class="px-3 py-2">
                     <span class={[
@@ -220,9 +233,15 @@ defmodule ConvoyWeb.AdminLive do
                   <td class="px-3 py-2 text-right font-mono">{r.players}</td>
                   <td class="px-3 py-2 text-right font-mono">{r.entities}</td>
                   <td class="px-3 py-2 text-right font-mono text-amber-300">{r.ore_remaining}</td>
-                  <td class="px-3 py-2 text-right font-mono text-fuchsia-300">{stopped_dash(r, r.last_fuel)}</td>
-                  <td class="px-3 py-2 text-right font-mono text-slate-400">{stopped_dash(r, mb(r.memory))}</td>
-                  <td class="px-3 py-2 text-right font-mono text-slate-400">{stopped_dash(r, fmt_int(r.reductions_per_s))}</td>
+                  <td class="px-3 py-2 text-right font-mono text-fuchsia-300">
+                    {stopped_dash(r, r.last_fuel)}
+                  </td>
+                  <td class="px-3 py-2 text-right font-mono text-slate-400">
+                    {stopped_dash(r, mb(r.memory))}
+                  </td>
+                  <td class="px-3 py-2 text-right font-mono text-slate-400">
+                    {stopped_dash(r, fmt_int(r.reductions_per_s))}
+                  </td>
                   <td class="px-3 py-2 text-right whitespace-nowrap">
                     <button
                       :if={r.status == :stopped}
@@ -250,7 +269,10 @@ defmodule ConvoyWeb.AdminLive do
                     </button>
                   </td>
                 </tr>
-                <tr :if={MapSet.member?(@expanded, r.region_id)} class="border-b border-slate-800/60 bg-slate-950/40">
+                <tr
+                  :if={MapSet.member?(@expanded, r.region_id)}
+                  class="border-b border-slate-800/60 bg-slate-950/40"
+                >
                   <td colspan="10" class="px-6 py-2">
                     <%= if r.scores == %{} do %>
                       <span class="text-[11px] text-slate-600">No players in this region.</span>
@@ -268,7 +290,9 @@ defmodule ConvoyWeb.AdminLive do
                               data-confirm={"Kick '#{player}' from #{r.region_id}?"}
                               class="text-rose-400 hover:text-rose-300"
                               title="kick player"
-                            >✕</button>
+                            >
+                              ✕
+                            </button>
                           </span>
                         <% end %>
                       </div>
@@ -278,7 +302,8 @@ defmodule ConvoyWeb.AdminLive do
               <% end %>
               <tr :if={@rows == []}>
                 <td colspan="10" class="px-3 py-6 text-center text-slate-500 text-xs">
-                  No simulations running. Start one with <code>mix convoy.run</code> or open <code>/</code>.
+                  No simulations running. Start one with <code>mix convoy.run</code>
+                  or open <code>/</code>.
                 </td>
               </tr>
             </tbody>

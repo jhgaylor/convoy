@@ -134,15 +134,21 @@ defmodule Convoy.Compile do
   @doc "Starter source for a language, reproducing the default harvester logic."
   def template(:assemblyscript) do
     """
-    // Harvester behaviour in AssemblyScript. Compiled in-game with `asc`.
+    // Harvester + forge in AssemblyScript. Compiled in-game with `asc`.
     // Return an intent code (see the ABI panel); the sim resolves it.
     export function decide(
       cargo: i32, cargoMax: i32, atBase: i32, onResource: i32,
-      resDx: i32, resDy: i32, baseDx: i32, baseDy: i32, tick: i32
+      resDx: i32, resDy: i32, baseDx: i32, baseDy: i32, tick: i32,
+      baseOre: i32, baseGoods: i32, canRefine: i32, canCargo: i32, canFuel: i32
     ): i32 {
-      if (atBase && cargo > 0) return 2; // unload
-      if (cargo >= cargoMax)   return 3; // head to base
-      if (onResource)          return 1; // harvest
+      if (atBase && cargo > 0) return 2; // unload into the forge
+      if (atBase) {                      // empty-handed at base: climb the tech ladder
+        if (canRefine) return 20;        //   faster refining
+        if (canCargo)  return 21;        //   bigger cargo
+        if (canFuel)   return 22;        //   more fuel budget
+      }
+      if (cargo >= cargoMax) return 3;   // head to base
+      if (onResource)        return 1;   // harvest
       return 4;                          // seek nearest ore
     }
     """
@@ -150,7 +156,7 @@ defmodule Convoy.Compile do
 
   def template(:rust) do
     """
-    // Harvester behaviour in Rust, compiled single-file to wasm32 (no_std,
+    // Harvester + forge in Rust, compiled single-file to wasm32 (no_std,
     // no cargo). Export `decide`; return an intent code.
     #![no_std]
     #[panic_handler]
@@ -160,24 +166,42 @@ defmodule Convoy.Compile do
     pub extern "C" fn decide(
         cargo: i32, cargo_max: i32, at_base: i32, on_resource: i32,
         _res_dx: i32, _res_dy: i32, _base_dx: i32, _base_dy: i32, _tick: i32,
+        _base_ore: i32, _base_goods: i32, can_refine: i32, can_cargo: i32, can_fuel: i32,
     ) -> i32 {
-        if at_base != 0 && cargo > 0 { return 2; } // unload
-        if cargo >= cargo_max         { return 3; } // head to base
-        if on_resource != 0           { return 1; } // harvest
-        4                                           // seek nearest ore
+        if at_base != 0 && cargo > 0 { return 2; } // unload into the forge
+        if at_base != 0 {                          // empty at base: climb the tech ladder
+            if can_refine != 0 { return 20; }      //   faster refining
+            if can_cargo != 0  { return 21; }      //   bigger cargo
+            if can_fuel != 0   { return 22; }      //   more fuel budget
+        }
+        if cargo >= cargo_max { return 3; }        // head to base
+        if on_resource != 0   { return 1; }        // harvest
+        4                                          // seek nearest ore
     }
     """
   end
 
   def template(:tinygo) do
     """
-    // Harvester behaviour in Go, compiled with TinyGo to wasm.
+    // Harvester + forge in Go, compiled with TinyGo to wasm.
     package main
 
     //export decide
-    func decide(cargo, cargoMax, atBase, onResource, resDx, resDy, baseDx, baseDy, tick int32) int32 {
+    func decide(cargo, cargoMax, atBase, onResource, resDx, resDy, baseDx, baseDy, tick,
+    \tbaseOre, baseGoods, canRefine, canCargo, canFuel int32) int32 {
     \tif atBase != 0 && cargo > 0 {
-    \t\treturn 2 // unload
+    \t\treturn 2 // unload into the forge
+    \t}
+    \tif atBase != 0 { // empty at base: climb the tech ladder
+    \t\tif canRefine != 0 {
+    \t\t\treturn 20 // faster refining
+    \t\t}
+    \t\tif canCargo != 0 {
+    \t\t\treturn 21 // bigger cargo
+    \t\t}
+    \t\tif canFuel != 0 {
+    \t\t\treturn 22 // more fuel budget
+    \t\t}
     \t}
     \tif cargo >= cargoMax {
     \t\treturn 3 // head to base
@@ -194,7 +218,7 @@ defmodule Convoy.Compile do
 
   def template(:zig) do
     """
-    // Harvester behaviour in Zig, compiled single-file to wasm32-freestanding
+    // Harvester + forge in Zig, compiled single-file to wasm32-freestanding
     // (no std, no imports). `export fn decide` gives it the C ABI the sim wants;
     // return an intent code.
     export fn decide(
@@ -207,13 +231,25 @@ defmodule Convoy.Compile do
         base_dx: i32,
         base_dy: i32,
         tick: i32,
+        base_ore: i32,
+        base_goods: i32,
+        can_refine: i32,
+        can_cargo: i32,
+        can_fuel: i32,
     ) i32 {
         _ = res_dx;
         _ = res_dy;
         _ = base_dx;
         _ = base_dy;
         _ = tick;
-        if (at_base != 0 and cargo > 0) return 2; // unload
+        _ = base_ore;
+        _ = base_goods;
+        if (at_base != 0 and cargo > 0) return 2; // unload into the forge
+        if (at_base != 0) { // empty at base: climb the tech ladder
+            if (can_refine != 0) return 20; // faster refining
+            if (can_cargo != 0) return 21; // bigger cargo
+            if (can_fuel != 0) return 22; // more fuel budget
+        }
         if (cargo >= cargo_max) return 3; // head to base
         if (on_resource != 0) return 1; // harvest
         return 4; // seek nearest ore
@@ -223,15 +259,21 @@ defmodule Convoy.Compile do
 
   def template(:c) do
     """
-    // Harvester behaviour in C, compiled single-file to wasm32 with no libc and
+    // Harvester + forge in C, compiled single-file to wasm32 with no libc and
     // no imports. `decide` is exported by the linker; return an intent code.
     int decide(
         int cargo, int cargo_max, int at_base, int on_resource,
-        int res_dx, int res_dy, int base_dx, int base_dy, int tick
+        int res_dx, int res_dy, int base_dx, int base_dy, int tick,
+        int base_ore, int base_goods, int can_refine, int can_cargo, int can_fuel
     ) {
-      if (at_base && cargo > 0) return 2; // unload
-      if (cargo >= cargo_max)   return 3; // head to base
-      if (on_resource)          return 1; // harvest
+      if (at_base && cargo > 0) return 2; // unload into the forge
+      if (at_base) {                      // empty at base: climb the tech ladder
+        if (can_refine) return 20;        //   faster refining
+        if (can_cargo)  return 21;        //   bigger cargo
+        if (can_fuel)   return 22;        //   more fuel budget
+      }
+      if (cargo >= cargo_max) return 3;   // head to base
+      if (on_resource)        return 1;   // harvest
       return 4;                           // seek nearest ore
     }
     """

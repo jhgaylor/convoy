@@ -17,11 +17,12 @@ That second rule is why some languages are a great fit and others aren't (see
 
 ## The `decide` ABI
 
-`decide` takes nine `i32` parameters and returns one `i32`:
+`decide` takes fourteen `i32` parameters and returns one `i32`:
 
 ```
 decide(cargo, cargo_max, at_base, on_resource,
-       res_dx, res_dy, base_dx, base_dy, tick) -> code
+       res_dx, res_dy, base_dx, base_dy, tick,
+       base_ore, base_goods, can_refine, can_cargo, can_fuel) -> code
 ```
 
 | param | meaning |
@@ -32,23 +33,49 @@ decide(cargo, cargo_max, at_base, on_resource,
 | `res_dx`, `res_dy` | direction (−1/0/1) to the nearest ore |
 | `base_dx`, `base_dy` | direction (−1/0/1) to base |
 | `tick` | the current tick number |
+| `base_ore` | raw ore in your base, waiting to be refined |
+| `base_goods` | refined goods you can spend on upgrades |
+| `can_refine`, `can_cargo`, `can_fuel` | 1 if you can afford the next level of that tech right now, else 0 |
 
 Return one of these intent codes:
 
 | code | intent |
 |------|--------|
 | `1` | harvest |
-| `2` | unload |
+| `2` | unload (deliver cargo into your base's stockpile) |
 | `3` | move toward base |
 | `4` | move toward nearest resource |
 | `5` | wander (deterministic) |
 | `6` | move toward the resource farthest from base |
 | `10` / `11` / `12` / `13` | move +x / −x / +y / −y |
+| `20` / `21` / `22` | build refine / cargo / fuel (only at base, if affordable) |
 | anything else (incl. `0`) | idle |
 
 Codes `3`/`4`/`6` let the sim do the pathfinding; `10`–`13` move one step in a
 direction you choose (using `res_dx`/`base_dx`/etc.). `decide` is a **pure
 function** — same inputs, same output — so there's no per-bot memory yet.
+
+## The Forge: refining and the tech ladder
+
+Delivering ore is only the start. `unload` (code `2`) drops your cargo into your
+base's **raw ore stockpile** (`base_ore`). Each tick, the base automatically
+**refines** ore into **goods** (`base_goods`) at a rate set by your refine tech —
+and your lifetime refined total is your score on the leaderboard (spending goods
+never lowers it).
+
+Standing on the base with goods to spare, spend them to climb the tech ladder:
+
+| build | code | effect |
+|-------|------|--------|
+| **refine** | `20` | refine ore into goods faster (compounding throughput) |
+| **cargo** | `21` | every one of your harvesters carries more per trip |
+| **fuel** | `22` | a bigger per-tick fuel budget for your code (capped) |
+
+You don't need to know the prices — the sim hands you `can_refine` / `can_cargo`
+/ `can_fuel` flags that are already true only when you can afford that tech's
+next level. A common opening: harvest a few loads, then start funnelling goods
+into `refine` so the rest of the game compounds. The trade-off is yours to
+program: pour into one tech, or spread across all three?
 
 ## Running your bot
 

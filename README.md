@@ -113,6 +113,7 @@ the doc explains why; use AssemblyScript for a scripting feel).
 | **Local dev loop**: edit a file, watch in the sim | `mix convoy.run` + `POST /api/region/:id/program` (or `/upload`) + named regions (`/?region=NAME`) |
 | **Ops/overview**: every running sim + utilization, stop/delete/kick | `ConvoyWeb.AdminLive` (`/admin`) + `Engine.list_regions/0`, `region_stats/1`, `stop_region/1`, `delete_region/1`, `kick_player/2` |
 | **Route a session to its region** (§9) | `ConvoyWeb.SimLive` (spectator) subscribes over PubSub; submits go through `Convoy.Loader` → `Engine.submit_player/5` |
+| **The Forge** (§1): refine harvested ore, climb a rate-based tech ladder | each player has a `base` (`World.bases`): `unload` stocks raw ore, `Sim` refines it to goods each tick (`World.refine_all/1`), and `build` intents (codes 20/21/22) spend goods on **refine / cargo / fuel** tech |
 
 ## Persistence (surviving deploys)
 
@@ -189,12 +190,14 @@ hint and suggests compiling locally + uploading the `.wasm` instead.
 
 ### The WASM ABI
 
-The host hands the module a read-only per-entity view; the module returns an
-intent code (full table in `Convoy.Engine.Wasm`):
+The host hands the module a read-only per-entity view — including your base's
+economy and what tech you can afford — and the module returns an intent code
+(full table in `Convoy.Engine.Wasm`):
 
 ```
 decide(cargo, cargo_max, at_base, on_resource,
-       res_dx, res_dy, base_dx, base_dy, tick) -> code
+       res_dx, res_dy, base_dx, base_dy, tick,
+       base_ore, base_goods, can_refine, can_cargo, can_fuel) -> code
 ```
 
 ### Why fuel + traps matter (proven, not asserted)
@@ -232,8 +235,12 @@ persisted snapshot, so a shared game survives deploys.
 
 ## Not yet built (next milestones, per the primer)
 
-- Warm/cold fast-forward (§5) and the event-log half of persistence (§8).
 - Convoys and border-crossing handoff between regions (§4) — the only PvP moment.
+- Warm/cold fast-forward (§5) and the event-log half of persistence (§8). The
+  Forge's refining is deliberately rate-based so a warm region is
+  fast-forwardable; wiring up the fast-forward itself is still to do.
+- More of the Forge: spending tech reaching deeper (e.g. a fleet upgrade), and
+  goods feeding the convoy economy.
 - OS-level sandbox around both the WASM runner *and* the compile service (§7, §10).
 - Persistent player "Memory" between ticks (§8) and per-player module storage.
 

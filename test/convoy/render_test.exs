@@ -11,15 +11,20 @@ defmodule Convoy.Engine.RenderTest do
 
   test "the base shows as B once harvesters move off it" do
     # a few ticks so the harvesters leave the base cell (they all start on it)
-    grid = World.generate(seed: 1) |> World.add_player("p1") |> Sim.run(&Convoy.Bots.seeker/2, 3) |> Render.grid()
+    grid =
+      World.generate(seed: 1)
+      |> World.add_player("p1")
+      |> Sim.run(&Convoy.Bots.seeker/2, 3)
+      |> Render.grid()
+
     assert grid =~ "B"
   end
 
   test "frame includes the stats line" do
     frame = World.generate(seed: 1) |> Render.frame()
     assert frame =~ "tick 0"
-    assert frame =~ "delivered 0"
-    assert frame =~ "scores"
+    assert frame =~ "refined 0"
+    assert frame =~ "bases"
     assert frame =~ "ore-left"
   end
 

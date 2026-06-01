@@ -49,7 +49,7 @@ defmodule Convoy.WasmTest do
     spinner = """
     (module
       (func (export "decide")
-        (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)
+        (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)
         (loop $l (br $l))
         (i32.const 4)))
     """
@@ -65,7 +65,7 @@ defmodule Convoy.WasmTest do
     Wasm.stop(instance)
   end
 
-  @abi "(param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)"
+  @abi "(param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)"
 
   # primer §7 — fuel bounds CPU; StoreLimits bounds allocation. A module
   # demanding more linear memory than the cap is rejected at instantiation,
@@ -143,14 +143,32 @@ defmodule Convoy.WasmTest do
   test "the WAT harvester delivers identically to the reference Elixir decider" do
     {:ok, instance} = Wasm.instantiate(Wasm.default_source())
 
-    ref_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(&Convoy.Bots.harvester/2, 200)
-    wasm_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(wasm_decider(instance), 200)
+    ref_world =
+      World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(&Convoy.Bots.harvester/2, 200)
 
-    assert World.total_delivered(wasm_world) == World.total_delivered(ref_world)
-    assert World.total_delivered(wasm_world) > 0
+    wasm_world =
+      World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(wasm_decider(instance), 200)
+
+    assert World.total_refined(wasm_world) == World.total_refined(ref_world)
+    assert World.total_refined(wasm_world) > 0
     assert wasm_world.resources == ref_world.resources
+    # The Forge is exercised end-to-end: both climb the tech ladder identically.
+    assert World.base(wasm_world, "p1") == World.base(ref_world, "p1")
+    assert World.base(wasm_world, "p1").tech.refine > 0
 
     Wasm.stop(instance)
+  end
+
+  # The Forge build codes (20/21/22) cross the ABI as build intents; the Sim
+  # then validates "at base + affordable" before applying them.
+  test "build codes map to build intents over the ABI" do
+    {:ok, inst} = Wasm.instantiate(Convoy.Bots.wat_builder())
+    world = World.generate(seed: 1) |> World.add_player("p1")
+    e = hd(world.entities)
+
+    assert {:ok, {:build, :refine}, used} = Wasm.decide(inst, e, world, 50_000)
+    assert used > 0
+    Wasm.stop(inst)
   end
 
   # WASM runs through the same authoritative Sim, so the anti-cheat / replay

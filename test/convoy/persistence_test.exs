@@ -77,7 +77,12 @@ defmodule Convoy.PersistenceTest do
   test "a stale-version snapshot is discarded instead of crashing" do
     id = "stale-#{System.unique_integer([:positive])}"
     # An older deploy's snapshot (wrong version) must not be restored.
-    Persistence.save(id, %{version: 0, region_id: id, world: World.generate(seed: 1), backend: :wasm})
+    Persistence.save(id, %{
+      version: 0,
+      region_id: id,
+      world: World.generate(seed: 1),
+      backend: :wasm
+    })
 
     Engine.ensure_region(id, persist: true)
     snap = Engine.snapshot(id)

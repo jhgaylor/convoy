@@ -19,12 +19,18 @@ defmodule Convoy.CompileTest do
   # the proof the ABI + template are correct, end to end.
   defp assert_parity_with_rules(wasm_bytes) do
     {:ok, instance} = Wasm.instantiate(wasm_bytes)
-    wasm_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(wasm_decider(instance), 200)
+
+    wasm_world =
+      World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(wasm_decider(instance), 200)
+
     baseline = harvester_baseline()
 
-    assert World.total_delivered(wasm_world) == World.total_delivered(baseline)
-    assert World.total_delivered(wasm_world) > 0
+    assert World.total_refined(wasm_world) == World.total_refined(baseline)
+    assert World.total_refined(wasm_world) > 0
     assert wasm_world.resources == baseline.resources
+    # Parity includes the Forge: the compiled bot climbs the tech ladder
+    # identically to the reference decider.
+    assert World.base(wasm_world, "p1") == World.base(baseline, "p1")
     Wasm.stop(instance)
   end
 
@@ -143,7 +149,9 @@ defmodule Convoy.CompileTest do
 
     test "compiled languages report available when a builder is configured" do
       System.put_env("CONVOY_BUILDER_URL", "http://localhost:1")
-      for lang <- [:rust, :tinygo, :assemblyscript, :zig, :c], do: assert Compile.available?(lang)
+
+      for lang <- [:rust, :tinygo, :assemblyscript, :zig, :c],
+          do: assert(Compile.available?(lang))
     end
 
     test "an unreachable builder surfaces a clear error" do

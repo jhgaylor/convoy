@@ -100,15 +100,21 @@ defmodule Mix.Tasks.Convoy.Run do
 
     body =
       case lang do
-        :wasm -> Map.merge(base, %{language: "wasm", source: Base.encode64(source), encoding: "base64"})
-        _ -> Map.merge(base, %{language: to_string(lang), source: source})
+        :wasm ->
+          Map.merge(base, %{language: "wasm", source: Base.encode64(source), encoding: "base64"})
+
+        _ ->
+          Map.merge(base, %{language: to_string(lang), source: source})
       end
 
     info("→ #{lang} as player '#{player}' → #{url}")
 
     case http_post(url, Jason.encode!(body)) do
       {:error, reason} ->
-        abort("could not reach #{server} (is `mix phx.server` running?): #{inspect(reason)}", opts[:watch])
+        abort(
+          "could not reach #{server} (is `mix phx.server` running?): #{inspect(reason)}",
+          opts[:watch]
+        )
 
       {200, payload} ->
         backend = payload["backend"] || "?"
@@ -116,7 +122,10 @@ defmodule Mix.Tasks.Convoy.Run do
         info("   watch it: #{server}/?region=#{region}")
 
       {status, payload} ->
-        abort("server returned #{status}: #{payload["message"] || inspect(payload)}", opts[:watch])
+        abort(
+          "server returned #{status}: #{payload["message"] || inspect(payload)}",
+          opts[:watch]
+        )
     end
   end
 
@@ -128,11 +137,16 @@ defmodule Mix.Tasks.Convoy.Run do
         ticks = opts[:ticks] || 200
         every = opts[:every] || max(div(ticks, 8), 1)
         seed = opts[:seed] || 1
+        player = opts[:player] || World.default_player()
 
-        info("running #{lang} for #{ticks} ticks (seed #{seed})\n")
+        info("running #{lang} as player '#{player}' for #{ticks} ticks (seed #{seed})\n")
+
+        # A fresh world has no players (the browser is a spectator); the headless
+        # runner joins one so there are harvesters to drive.
+        start = World.generate(seed: seed) |> World.add_player(player)
 
         final =
-          Enum.reduce(1..ticks, World.generate(seed: seed), fn t, world ->
+          Enum.reduce(1..ticks, start, fn t, world ->
             world = Sim.tick(world, decider)
             if rem(t, every) == 0, do: print_frame(world)
             world

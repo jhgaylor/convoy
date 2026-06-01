@@ -17,7 +17,10 @@ defmodule Convoy.AdminTest do
 
   test "region_stats reports world + process utilization (incl. wasm instances)" do
     id = "ov-#{System.unique_integer([:positive])}"
-    wat = "(module (func (export \"decide\") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 4)))"
+
+    wat =
+      "(module (func (export \"decide\") (param i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 4)))"
+
     Engine.ensure_region(id)
     Engine.submit_player(id, "seeker", :wasm, Convoy.Bots.wat_seeker(), "seeker")
     Engine.submit_player(id, "wasm_bot", :wasm, wat, wat)
