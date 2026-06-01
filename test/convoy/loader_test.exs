@@ -3,11 +3,6 @@ defmodule Convoy.LoaderTest do
 
   alias Convoy.{Loader, Compile}
 
-  test "rules prepare passes source through to the :rules backend" do
-    assert {:ok, :rules, "otherwise idle", "otherwise idle"} =
-             Loader.prepare(:rules, "otherwise idle")
-  end
-
   test "wat prepare loads text on the :wasm backend unchanged" do
     assert {:ok, :wasm, "(module)", "(module)"} = Loader.prepare(:wat, "(module)")
   end

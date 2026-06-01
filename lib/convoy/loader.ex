@@ -4,29 +4,26 @@ defmodule Convoy.Loader do
   `Convoy.Engine.load_program/4` wants: `{backend, exec, display}`.
 
   This is the one place that knows how each language reaches the sim, shared by
-  every entry point (the LiveView editor, the HTTP load API, the `convoy.run`
-  mix task) so they all behave identically. Compilation (the risky part) is
-  delegated to `Convoy.Compile`; this module only routes.
+  every entry point (the HTTP API, the browser upload, the `convoy.run` mix
+  task) so they all behave identically. Everything ends up as a WASM module.
+  Compilation (the risky part) is delegated to `Convoy.Compile`; this only routes.
 
-  - `:rules` → the DSL backend, source unchanged.
-  - `:wat` → the WASM backend; Wasmtime compiles the text directly.
+  - `:wat` → Wasmtime compiles the text directly.
   - `:assemblyscript` / `:rust` / `:tinygo` → compiled to wasm bytes first.
   - `:wasm` → raw `.wasm` bytes, loaded as-is.
 
-  `exec` is what runs; `display` is the human-facing source shown in the editor
-  (high-level source for compiled languages, a short label for raw bytes).
+  `exec` is what runs; `display` is the human-facing source (high-level source
+  for compiled languages, a short label for raw bytes).
   """
 
   alias Convoy.Compile
 
   @compiled [:assemblyscript, :rust, :tinygo]
 
-  @type backend :: :rules | :wasm
-  @type prepared :: {:ok, backend(), binary(), String.t()} | {:error, String.t()}
+  @type prepared :: {:ok, :wasm, binary(), String.t()} | {:error, String.t()}
 
   @doc "Prepare a program for loading. See the module doc for language behaviour."
   @spec prepare(atom(), binary()) :: prepared()
-  def prepare(:rules, source), do: {:ok, :rules, source, source}
   def prepare(:wat, source), do: {:ok, :wasm, source, source}
 
   def prepare(:wasm, bytes) when is_binary(bytes) do

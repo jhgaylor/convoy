@@ -34,7 +34,7 @@ defmodule Convoy.Compile do
 
   @timeout_ms 20_000
 
-  @doc "Languages this module can compile from source (excludes :rules and raw :upload)."
+  @doc "Languages this module can compile from source (excludes raw :upload)."
   @spec languages() :: [atom()]
   def languages, do: [:wat, :assemblyscript, :rust, :tinygo]
 

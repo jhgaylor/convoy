@@ -2,7 +2,7 @@ defmodule Convoy.CompileTest do
   use ExUnit.Case, async: false
 
   alias Convoy.Compile
-  alias Convoy.Engine.{World, Program, Sim, Wasm}
+  alias Convoy.Engine.{World, Sim, Wasm}
 
   defp wasm_decider(instance) do
     fn entity, world ->
@@ -11,24 +11,16 @@ defmodule Convoy.CompileTest do
     end
   end
 
-  defp rules_baseline do
-    {:ok, rules} =
-      Program.compile("""
-      when can_unload  unload
-      when cargo_full  to_base
-      when on_resource harvest
-      otherwise        to_resource
-      """)
-
-    World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(rules, 200)
+  defp harvester_baseline do
+    World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(&Convoy.Bots.harvester/2, 200)
   end
 
-  # A compiled module must behave exactly like the canonical rule program —
-  # that's the proof the ABI + template are correct, end to end.
+  # A compiled module must behave exactly like the reference harvester — that's
+  # the proof the ABI + template are correct, end to end.
   defp assert_parity_with_rules(wasm_bytes) do
     {:ok, instance} = Wasm.instantiate(wasm_bytes)
     wasm_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(wasm_decider(instance), 200)
-    baseline = rules_baseline()
+    baseline = harvester_baseline()
 
     assert World.total_delivered(wasm_world) == World.total_delivered(baseline)
     assert World.total_delivered(wasm_world) > 0

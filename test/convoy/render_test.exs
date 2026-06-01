@@ -1,7 +1,7 @@
 defmodule Convoy.Engine.RenderTest do
   use ExUnit.Case, async: true
 
-  alias Convoy.Engine.{World, Program, Sim, Render}
+  alias Convoy.Engine.{World, Sim, Render}
 
   test "grid has one row per world row" do
     world = World.generate(seed: 1)
@@ -10,9 +10,8 @@ defmodule Convoy.Engine.RenderTest do
   end
 
   test "the base shows as B once harvesters move off it" do
-    {:ok, rules} = Program.compile("otherwise to_resource")
     # a few ticks so the harvesters leave the base cell (they all start on it)
-    grid = World.generate(seed: 1) |> World.add_player("p1") |> Sim.run(rules, 3) |> Render.grid()
+    grid = World.generate(seed: 1) |> World.add_player("p1") |> Sim.run(&Convoy.Bots.seeker/2, 3) |> Render.grid()
     assert grid =~ "B"
   end
 

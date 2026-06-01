@@ -64,7 +64,7 @@ mix phx.server                                   # terminal 1
 mix convoy.run examples/harvester.rs --watch     # terminal 2, then open the browser
 ```
 
-The language is inferred from the file extension (`.rs .go .ts .wat .rules
+The language is inferred from the file extension (`.rs .go .ts .wat
 .wasm`). Add `--player NAME --region arena` to join a shared world. See the
 [README](../README.md#local-dev-workflow-write-code-in-your-editor-watch-it-in-the-sim).
 
@@ -81,12 +81,12 @@ curl --data-binary @bot.rs -H 'Content-Type: application/octet-stream' \
 
 - `region` is in the path (`arena` above); `player` and `lang` are query params.
 - Drop `lang` if you pass `?file=bot.rs` — the language is inferred from the
-  extension (`.rs .go .ts .wat .wasm .rules`).
+  extension (`.rs .go .ts .wat .wasm`).
 - Already have a compiled module? `lang=wasm` and the binary is the body:
   `curl --data-binary @bot.wasm ...?player=bob&lang=wasm`.
 
 Rust / Go / AssemblyScript are compiled by an isolated builder service (no
-secrets, no network egress); WAT and the Rules DSL compile in-process. The
+secrets, no network egress); WAT compiles in-process. The
 response is JSON: `{"status":"ok","player":"bob","backend":"wasm",...}`.
 
 **In the browser:** pick your language, paste source (or **Upload .wasm**), set a

@@ -1,34 +1,13 @@
 defmodule Convoy.EngineTest do
   use ExUnit.Case, async: true
 
-  alias Convoy.Engine.{World, Program, Sim}
+  alias Convoy.Engine.{World, Sim}
 
-  @program """
-  when can_unload  unload
-  when cargo_full  to_base
-  when on_resource harvest
-  otherwise        to_resource
-  """
-
-  defp rules do
-    {:ok, rules} = Program.compile(@program)
-    rules
-  end
+  # The canonical harvester as a plain Elixir decider (no language involved).
+  defp rules, do: &Convoy.Bots.harvester/2
 
   # A world with one player's harvesters (generate now starts empty).
   defp solo(seed), do: World.generate(seed: seed) |> World.add_player("p1")
-
-  test "the default program compiles to four rules" do
-    assert {:ok, rules} = Program.compile(@program)
-    assert length(rules) == 4
-    assert {:always, :to_resource} = List.last(rules)
-  end
-
-  test "compile reports line-numbered errors for unknown tokens" do
-    assert {:error, msg} = Program.compile("when nonsense harvest")
-    assert msg =~ "line 1"
-    assert msg =~ "unknown condition"
-  end
 
   test "same seed produces an identical world layout" do
     a = World.generate(seed: 42)

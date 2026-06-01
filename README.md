@@ -31,7 +31,7 @@ publicly.
 
 You don't have to write bots in the website. Develop in your editor, run one
 command, and the browser becomes a live viewer. The language is inferred from
-the file extension (`.rules .wat .rs .ts .go .wasm`).
+the file extension (`.rs .go .ts .wat .wasm`).
 
 ```bash
 # terminal 1
@@ -51,7 +51,7 @@ players in one common world — each owns their own harvesters, runs their own
 code, and scores separately. Two terminals, two strategies, one arena:
 
 ```bash
-mix convoy.run examples/harvester.rules --region arena --player alice
+mix convoy.run examples/harvester.ts --region arena --player alice
 mix convoy.run examples/harvester.rs    --region arena --player bob
 ```
 
@@ -66,7 +66,7 @@ Prefer the terminal? `--headless` runs the sim in-process and renders ASCII —
 no server, no browser, the fastest loop:
 
 ```bash
-mix convoy.run examples/harvester.rules --headless --ticks 300
+mix convoy.run examples/harvester.rs --headless --ticks 300
 ```
 
 ```
@@ -131,35 +131,22 @@ The browser is a spectator: opening a region never creates a player, and an
 empty region just shows the map until someone submits.
 | **Route a session to its region** (§9) | `ConvoyWeb.SimLive` subscribes over PubSub and sends commands |
 
-## The program language
-
-A program is a list of `condition → action` rules, evaluated top-to-bottom;
-the first matching condition wins and produces one intent per entity per tick.
-
-```
-when can_unload  unload      # at base AND carrying cargo
-when cargo_full  to_base
-when on_resource harvest
-otherwise        to_resource
-```
-
-- **Conditions:** `cargo_full`, `cargo_empty`, `has_cargo`, `on_resource`,
-  `at_base`, `can_unload`, `always` (alias `otherwise`).
-- **Actions:** `harvest`, `unload`, `to_base`, `to_resource`, `wander`, `idle`.
-
 ## Bringing your own code
 
-Pick a language from the dropdown in the UI. There are six paths, and they all
-end at the same place — the sim only ever instantiates a finished `.wasm`:
+Your bot is a WebAssembly module that exports `decide`. Several languages get
+you there, and they all end at the same place — the sim only ever instantiates
+a finished `.wasm`:
 
 | Language | How it runs |
 |---|---|
-| **Rules DSL** | The sandboxed `condition → action` language above. No toolchain. |
-| **WAT** | WebAssembly text, pasted in the editor. Wasmtime compiles it directly. |
-| **AssemblyScript** | Compiled in-game by the pure-JS `asc` compiler (no native toolchain). |
-| **Rust** | Compiled in-game, single-file, via `rustc --target wasm32-unknown-unknown`. |
-| **TinyGo** | Compiled in-game via `tinygo build -target=wasm` (if TinyGo is installed). |
-| **Upload .wasm** | Bring a precompiled module from *any* language (Rust/TinyGo/AS/C/Zig…). |
+| **WAT** | WebAssembly text. Wasmtime compiles it directly — no toolchain. |
+| **Rust** | Compiled, single-file, via `rustc --target wasm32-unknown-unknown`. |
+| **Go (TinyGo)** | Compiled via `tinygo build -target=wasm-unknown`. |
+| **AssemblyScript** | Compiled by the pure-JS `asc` compiler (the JS/TS path). |
+| **Upload .wasm** | Bring a precompiled module from *any* language (C/Zig/…). |
+
+See [docs/writing-bots.md](docs/writing-bots.md) for the `decide` ABI and
+per-language getting-started.
 
 All WASM paths run in **Wasmtime via `wasmex`** with a per-entity **fuel budget**
 (instruction count), **zero ambient authority** (empty import set), and return an

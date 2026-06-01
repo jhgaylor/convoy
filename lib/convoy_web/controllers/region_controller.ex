@@ -11,7 +11,7 @@ defmodule ConvoyWeb.RegionController do
 
   `player` is optional (defaults to the editor player). Submitting different
   players into the same region id is how multiplayer works: each becomes an
-  independent player in one shared world. Languages: `rules`, `wat`,
+  independent player in one shared world. Languages: `wat`,
   `assemblyscript`, `rust`, `tinygo`, `wasm`. Compilation happens server-side
   (`Convoy.Loader` → `Convoy.Compile`); the region is created if needed, the
   player's program loaded, and the sim started.
@@ -32,7 +32,6 @@ defmodule ConvoyWeb.RegionController do
   alias Convoy.Engine.World
 
   @languages %{
-    "rules" => :rules,
     "wat" => :wat,
     "assemblyscript" => :assemblyscript,
     "rust" => :rust,
@@ -88,7 +87,7 @@ defmodule ConvoyWeb.RegionController do
   defp resolve_language(%{"file" => f}) when is_binary(f), do: by_ext(f)
 
   defp resolve_language(_),
-    do: {:error, "specify ?lang=rust|tinygo|assemblyscript|wat|wasm|rules (or ?file=bot.rs)"}
+    do: {:error, "specify ?lang=rust|tinygo|assemblyscript|wat|wasm (or ?file=bot.rs)"}
 
   defp by_name(name) do
     case Map.get(@languages, name) do
@@ -104,7 +103,6 @@ defmodule ConvoyWeb.RegionController do
       ".ts" -> {:ok, :assemblyscript}
       ".wat" -> {:ok, :wat}
       ".wasm" -> {:ok, :wasm}
-      ext when ext in [".rules", ".dsl"] -> {:ok, :rules}
       ext -> {:error, "can't infer language from '#{ext}' — pass ?lang="}
     end
   end

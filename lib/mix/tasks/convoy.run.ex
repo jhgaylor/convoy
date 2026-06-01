@@ -8,9 +8,9 @@ defmodule Mix.Tasks.Convoy.Run do
 
   The language is inferred from the extension:
 
-      .rules .dsl   -> rule DSL        .ts  -> AssemblyScript
-      .wat          -> WebAssembly text .go -> TinyGo
-      .rs           -> Rust             .wasm -> precompiled module
+      .rs  -> Rust            .ts -> AssemblyScript
+      .go  -> TinyGo          .wat -> WebAssembly text
+      .wasm -> precompiled module
 
   ## Two modes
 
@@ -48,7 +48,7 @@ defmodule Mix.Tasks.Convoy.Run do
   use Mix.Task
 
   alias Convoy.Loader
-  alias Convoy.Engine.{World, Program, Wasm, Sim, Render}
+  alias Convoy.Engine.{World, Wasm, Sim, Render}
 
   @fuel_budget 50_000
 
@@ -147,14 +147,8 @@ defmodule Mix.Tasks.Convoy.Run do
     end
   end
 
-  # Returns {:ok, decide_fun, cleanup_fun} | {:error, msg}.
-  defp build_decider(:rules, source) do
-    case Program.compile(source) do
-      {:ok, rules} -> {:ok, &Program.eval(rules, &1, &2), fn -> :ok end}
-      {:error, msg} -> {:error, msg}
-    end
-  end
-
+  # Returns {:ok, decide_fun, cleanup_fun} | {:error, msg}. Everything compiles
+  # to a WASM module the headless sim drives.
   defp build_decider(lang, source) do
     with {:ok, :wasm, exec, _display} <- Loader.prepare(lang, source),
          {:ok, instance} <- Wasm.instantiate(exec) do
@@ -211,8 +205,6 @@ defmodule Mix.Tasks.Convoy.Run do
 
   defp language(nil, file) do
     case file |> Path.extname() |> String.downcase() do
-      ".rules" -> :rules
-      ".dsl" -> :rules
       ".wat" -> :wat
       ".rs" -> :rust
       ".ts" -> :assemblyscript

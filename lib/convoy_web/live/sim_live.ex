@@ -10,7 +10,7 @@ defmodule ConvoyWeb.SimLive do
   use ConvoyWeb, :live_view
 
   alias Convoy.{Engine, Loader, Compile}
-  alias Convoy.Engine.{World, Program, Wasm}
+  alias Convoy.Engine.{World, Wasm}
 
   @speeds [{"0.5x", 800}, {"1x", 400}, {"2x", 200}, {"4x", 100}]
 
@@ -20,8 +20,6 @@ defmodule ConvoyWeb.SimLive do
     ".go" => :tinygo,
     ".ts" => :assemblyscript,
     ".wat" => :wat,
-    ".rules" => :rules,
-    ".dsl" => :rules,
     ".wasm" => :wasm
   }
 
@@ -46,9 +44,9 @@ defmodule ConvoyWeb.SimLive do
      |> assign(:upload_error, nil)
      |> assign(:my_player, nil)
      |> assign_snapshot(Engine.snapshot(id))
-     # accept: :any — several of our extensions (.rs/.go/.wat/.rules) aren't
-     # registered MIME types, which allow_upload's filter rejects. We validate
-     # the extension ourselves in lang_from_ext/1.
+     # accept: :any — several of our extensions (.rs/.go/.wat) aren't registered
+     # MIME types, which allow_upload's filter rejects. We validate the
+     # extension ourselves in lang_from_ext/1.
      |> allow_upload(:bot, accept: :any, max_entries: 1, max_file_size: 8_000_000)}
   end
 
@@ -132,7 +130,7 @@ defmodule ConvoyWeb.SimLive do
 
   defp lang_from_ext(filename) do
     case Map.get(@ext_lang, filename |> Path.extname() |> String.downcase()) do
-      nil -> {:error, "unsupported file type — use .rs .go .ts .wat .rules or .wasm"}
+      nil -> {:error, "unsupported file type — use .rs .go .ts .wat or .wasm"}
       lang -> {:ok, lang}
     end
   end
@@ -168,8 +166,7 @@ defmodule ConvoyWeb.SimLive do
       %{id: :rust, label: "Rust", ext: "rs", lang: "rust", toolchain?: true, code: Compile.template(:rust)},
       %{id: :tinygo, label: "Go", ext: "go", lang: "tinygo", toolchain?: true, code: Compile.template(:tinygo)},
       %{id: :assemblyscript, label: "AssemblyScript", ext: "ts", lang: "assemblyscript", toolchain?: true, code: Compile.template(:assemblyscript)},
-      %{id: :wat, label: "WAT", ext: "wat", lang: "wat", toolchain?: false, code: Wasm.default_source()},
-      %{id: :rules, label: "Rules", ext: "rules", lang: "rules", toolchain?: false, code: Program.default_source()}
+      %{id: :wat, label: "WAT", ext: "wat", lang: "wat", toolchain?: false, code: Wasm.default_source()}
     ]
   end
 
@@ -321,7 +318,7 @@ defmodule ConvoyWeb.SimLive do
         </label>
       </div>
       <p class="text-xs text-slate-500 mt-1">
-        Pick a source file (<code>.rs .go .ts .wat .rules</code>) or a precompiled <code>.wasm</code>.
+        Pick a source file (<code>.rs .go .ts .wat</code>) or a precompiled <code>.wasm</code>.
       </p>
       <div class="mt-2 flex items-center gap-2">
         <.live_file_input upload={@uploads.bot} class="text-xs text-slate-300" />
@@ -361,10 +358,7 @@ defmodule ConvoyWeb.SimLive do
           <div class="text-slate-300">return code → intent</div>
           <code class="text-fuchsia-300">1 harvest · 2 unload · 3 to_base · 4 to_resource · 5 wander · 6 to_far_resource · 10-13 move ±x/±y · else idle</code>
         </div>
-        <p class="text-slate-500">
-          The Rules DSL is different — see the <code>Rules</code> tab. Full guide:
-          <code>docs/writing-bots.md</code>.
-        </p>
+        <p class="text-slate-500">Full guide: <code>docs/writing-bots.md</code>.</p>
       </div>
     </details>
     """
@@ -515,7 +509,7 @@ defmodule ConvoyWeb.SimLive do
   # --- view helpers ---
 
   defp error_to_string(:too_large), do: "file too large (max 8 MB)"
-  defp error_to_string(:not_accepted), do: "unsupported file type (.rs .go .ts .wat .rules .wasm)"
+  defp error_to_string(:not_accepted), do: "unsupported file type (.rs .go .ts .wat .wasm)"
   defp error_to_string(:too_many_files), do: "one file at a time"
   defp error_to_string(other), do: to_string(other)
 

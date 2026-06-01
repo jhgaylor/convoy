@@ -13,13 +13,10 @@ defmodule Convoy.Engine.Region do
   competing for the same ore are arbitrated fairly (single-writer). Scoring is
   per-player (`World.scores`).
 
-  The in-browser editor controls one player (`World.default_player/0`, "p1");
-  additional players join via `submit_player/5` (the CLI / HTTP API). Each
-  player's code runs through one of two backends:
-
-  - `:rules` — the sandboxed rule DSL (`Convoy.Engine.Program`).
-  - `:wasm`  — untrusted WebAssembly with fuel metering (`Convoy.Engine.Wasm`,
-    primer §7), per-player fuel budget; traps contained.
+  Players join via `submit_player/5` (the CLI / HTTP API / browser upload). Each
+  player's program is untrusted WebAssembly run with fuel metering
+  (`Convoy.Engine.Wasm`, primer §7) — a per-player fuel budget, traps contained.
+  Any language (Rust, Go, AssemblyScript, hand-written WAT) compiles to it.
 
   ## Persistence (primer §8)
 
@@ -34,7 +31,7 @@ defmodule Convoy.Engine.Region do
   use GenServer
   require Logger
 
-  alias Convoy.Engine.{World, Program, Wasm, Sim}
+  alias Convoy.Engine.{World, Wasm, Sim}
   alias Convoy.Persistence
 
   @default_tick_ms 400
@@ -230,17 +227,10 @@ defmodule Convoy.Engine.Region do
     end
   end
 
-  # Compile/instantiate, returning the runnable bits (rules or wasm).
-  defp compile_program(:rules, exec) do
-    case Program.compile(exec) do
-      {:ok, rules} -> {:ok, %{rules: rules, wasm: nil}}
-      {:error, _} = err -> err
-    end
-  end
-
+  # Instantiate the player's WASM module (everything compiles to wasm).
   defp compile_program(:wasm, exec) do
     case Wasm.instantiate(exec) do
-      {:ok, instance} -> {:ok, %{rules: nil, wasm: instance}}
+      {:ok, instance} -> {:ok, %{wasm: instance}}
       {:error, _} = err -> err
     end
   end
@@ -281,11 +271,7 @@ defmodule Convoy.Engine.Region do
     %{state | world: Sim.apply_intents(world, intents), last_fuel: fuel}
   end
 
-  defp decide_for(%{backend: :rules, rules: rules}, e, world) when not is_nil(rules),
-    do: {Program.eval(rules, e, world), 0}
-
-  defp decide_for(%{backend: :wasm, wasm: inst, fuel_budget: budget}, e, world)
-       when not is_nil(inst) do
+  defp decide_for(%{wasm: inst, fuel_budget: budget}, e, world) when not is_nil(inst) do
     {:ok, intent, used} = Wasm.decide(inst, e, world, budget)
     {intent, used}
   end
@@ -362,7 +348,6 @@ defmodule Convoy.Engine.Region do
       exec: exec,
       source: persisted.source,
       fuel_budget: persisted[:fuel_budget] || @default_fuel_budget,
-      rules: nil,
       wasm: nil,
       compile_error: nil
     }

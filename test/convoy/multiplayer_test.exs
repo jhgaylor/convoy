@@ -2,19 +2,7 @@ defmodule Convoy.MultiplayerTest do
   use ExUnit.Case, async: true
 
   alias Convoy.Engine
-  alias Convoy.Engine.{World, Program, Sim}
-
-  @worker """
-  when can_unload  unload
-  when cargo_full  to_base
-  when on_resource harvest
-  otherwise        to_resource
-  """
-
-  defp worker_rules do
-    {:ok, rules} = Program.compile(@worker)
-    rules
-  end
+  alias Convoy.Engine.{World, Sim}
 
   test "a fresh world has no players; add_player adds them, idempotently" do
     world = World.generate(seed: 1)
@@ -39,11 +27,9 @@ defmodule Convoy.MultiplayerTest do
   end
 
   test "two players score independently in one shared world" do
-    rules = worker_rules()
     world = World.generate(seed: 7) |> World.add_player("p1") |> World.add_player("p2")
-    decider = fn entity, w -> Program.eval(rules, entity, w) end
 
-    final = Sim.run(world, decider, 200)
+    final = Sim.run(world, &Convoy.Bots.harvester/2, 200)
 
     assert World.score(final, "p1") > 0
     assert World.score(final, "p2") > 0
@@ -51,14 +37,11 @@ defmodule Convoy.MultiplayerTest do
   end
 
   test "a multi-player world stays deterministic across runs" do
-    worker = worker_rules()
-    {:ok, idler} = Program.compile("otherwise idle")
-
     build = fn -> World.generate(seed: 3) |> World.add_player("p1") |> World.add_player("p2") end
 
-    # p1 works, p2 idles — programs dispatched per entity owner.
+    # p1 works, p2 idles — dispatched per entity owner.
     decider = fn e, w ->
-      if e.owner == "p1", do: Program.eval(worker, e, w), else: Program.eval(idler, e, w)
+      if e.owner == "p1", do: Convoy.Bots.harvester(e, w), else: :idle
     end
 
     a = Sim.run(build.(), decider, 150)
@@ -73,8 +56,8 @@ defmodule Convoy.MultiplayerTest do
     id = "mp-#{System.unique_integer([:positive])}"
     Engine.ensure_region(id)
 
-    :ok = Engine.submit_player(id, "idle", :rules, "otherwise idle", "otherwise idle")
-    :ok = Engine.submit_player(id, "worker", :rules, @worker, @worker)
+    :ok = Engine.submit_player(id, "idle", :wasm, Convoy.Bots.wat_idle(), "idle")
+    :ok = Engine.submit_player(id, "worker", :wasm, Convoy.Bots.wat_harvester(), "worker")
 
     for _ <- 1..150, do: Engine.step(id)
     snap = Engine.snapshot(id)
@@ -103,8 +86,8 @@ defmodule Convoy.MultiplayerTest do
   test "kicking a player from a Region removes them but leaves others running" do
     id = "mp-#{System.unique_integer([:positive])}"
     Engine.ensure_region(id)
-    :ok = Engine.submit_player(id, "alice", :rules, @worker, @worker)
-    :ok = Engine.submit_player(id, "bob", :rules, @worker, @worker)
+    :ok = Engine.submit_player(id, "alice", :wasm, Convoy.Bots.wat_harvester(), "alice")
+    :ok = Engine.submit_player(id, "bob", :wasm, Convoy.Bots.wat_harvester(), "bob")
 
     assert :ok = Engine.kick_player(id, "alice")
     snap = Engine.snapshot(id)

@@ -2,7 +2,7 @@ defmodule Convoy.Engine.Sim do
   @moduledoc """
   The deterministic tick loop (primer §6).
 
-  `tick/2` is a **pure function**: `(world, rules) -> world`. Given the same
+  `tick/2` is a **pure function**: `(world, decider) -> world`. Given the same
   starting world and program it always yields the same next world, which is
   what makes replays free and disputes resolvable (primer §6, §11).
 
@@ -18,17 +18,16 @@ defmodule Convoy.Engine.Sim do
   Player code never mutates `world`; it only returns intents resolved here.
   """
 
-  alias Convoy.Engine.{World, Program}
+  alias Convoy.Engine.World
 
   @max_events 40
 
   @typedoc """
-  Anything that turns an entity + read-only world into an intent. Either a
-  compiled rule list (`Program.t/0`) or an arity-2 decider closure — the latter
-  is how the WASM backend (`Convoy.Engine.Wasm`) plugs in without `Sim` knowing
-  which language produced the intent.
+  An arity-2 decider closure turning an entity + read-only world into an intent.
+  This is how the WASM backend (`Convoy.Engine.Wasm`) plugs in without `Sim`
+  knowing which language produced the intent.
   """
-  @type decider :: Program.t() | (World.entity(), World.t() -> term())
+  @type decider :: (World.entity(), World.t() -> term())
 
   @doc """
   Advance the world by one tick: run player code, then resolve its intents.
@@ -39,10 +38,6 @@ defmodule Convoy.Engine.Sim do
     intents = collect_intents(world, decide_fun)
     # (3)-(7) resolve authoritatively + commit.
     apply_intents(world, intents)
-  end
-
-  def tick(%World{} = world, rules) when is_list(rules) do
-    tick(world, &Program.eval(rules, &1, &2))
   end
 
   @doc """

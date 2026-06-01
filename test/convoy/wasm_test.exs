@@ -1,7 +1,7 @@
 defmodule Convoy.WasmTest do
   use ExUnit.Case, async: true
 
-  alias Convoy.Engine.{World, Program, Sim, Wasm}
+  alias Convoy.Engine.{World, Sim, Wasm}
 
   defp wasm_decider(instance) do
     fn entity, world ->
@@ -140,23 +140,15 @@ defmodule Convoy.WasmTest do
   end
 
   # The payoff: the WAT harvester reproduces the rule-DSL behaviour exactly.
-  test "the WAT harvester delivers identically to the equivalent rule program" do
-    {:ok, rules} =
-      Program.compile("""
-      when can_unload  unload
-      when cargo_full  to_base
-      when on_resource harvest
-      otherwise        to_resource
-      """)
-
+  test "the WAT harvester delivers identically to the reference Elixir decider" do
     {:ok, instance} = Wasm.instantiate(Wasm.default_source())
 
-    rules_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(rules, 200)
+    ref_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(&Convoy.Bots.harvester/2, 200)
     wasm_world = World.generate(seed: 9) |> World.add_player("p1") |> Sim.run(wasm_decider(instance), 200)
 
-    assert World.total_delivered(wasm_world) == World.total_delivered(rules_world)
+    assert World.total_delivered(wasm_world) == World.total_delivered(ref_world)
     assert World.total_delivered(wasm_world) > 0
-    assert wasm_world.resources == rules_world.resources
+    assert wasm_world.resources == ref_world.resources
 
     Wasm.stop(instance)
   end

@@ -1,7 +1,0 @@
-# The classic harvester, in the rule DSL.
-#   mix convoy.run examples/harvester.rules --watch
-# Edit a line, save, and watch the sim change in the browser.
-when can_unload  unload
-when cargo_full  to_base
-when on_resource harvest
-otherwise        to_resource

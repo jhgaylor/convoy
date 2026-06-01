@@ -12,7 +12,7 @@ defmodule Convoy.PersistenceTest do
 
   test "save/load round-trips a snapshot map" do
     id = "rt-#{System.unique_integer([:positive])}"
-    snap = %{version: 1, region_id: id, world: World.generate(seed: 5), backend: :rules}
+    snap = %{version: 1, region_id: id, world: World.generate(seed: 5), backend: :wasm}
 
     assert :ok = Persistence.save(id, snap)
     assert {:ok, loaded} = Persistence.load(id)
@@ -44,7 +44,7 @@ defmodule Convoy.PersistenceTest do
     id = "resume-#{System.unique_integer([:positive])}"
 
     Engine.ensure_region(id, persist: true)
-    :ok = Engine.load_program(id, :rules, "otherwise to_resource", "otherwise to_resource")
+    :ok = Engine.load_program(id, :wasm, Convoy.Bots.wat_harvester(), "harvester")
     Engine.set_speed(id, 20)
     Engine.play(id)
 
@@ -67,7 +67,7 @@ defmodule Convoy.PersistenceTest do
     assert after_restart.world.tick > 0
     # The submitted player and its program were restored, and it's still running.
     assert Map.has_key?(after_restart.players, "p1")
-    assert after_restart.players["p1"].backend == :rules
+    assert after_restart.players["p1"].backend == :wasm
     assert after_restart.status == :running
     assert after_restart.world.region_id == id
 
@@ -77,7 +77,7 @@ defmodule Convoy.PersistenceTest do
   test "a stale-version snapshot is discarded instead of crashing" do
     id = "stale-#{System.unique_integer([:positive])}"
     # An older deploy's snapshot (wrong version) must not be restored.
-    Persistence.save(id, %{version: 0, region_id: id, world: World.generate(seed: 1), backend: :rules})
+    Persistence.save(id, %{version: 0, region_id: id, world: World.generate(seed: 1), backend: :wasm})
 
     Engine.ensure_region(id, persist: true)
     snap = Engine.snapshot(id)
