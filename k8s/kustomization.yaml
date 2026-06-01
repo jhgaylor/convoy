@@ -24,4 +24,4 @@ resources:
 # stays on :latest.)
 images:
   - name: ghcr.io/jhgaylor/convoy
-    newTag: sha-da145ab55760ac715efc5983b6f157ed1f84ec70
+    newTag: sha-6d1d37c8334177aab172fb9eb803712a7c451b99
