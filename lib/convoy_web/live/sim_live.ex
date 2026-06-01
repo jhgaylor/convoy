@@ -294,7 +294,7 @@ defmodule ConvoyWeb.SimLive do
         <%!-- right: the world --%>
         <section class="space-y-4">
           <.controls status={@status} speeds={@speeds} tick_ms={@tick_ms} seed={@seed} />
-          <.scoreboard bases={@bases} players={@players} my_player={@my_player} />
+          <.scoreboard world={@world} bases={@bases} players={@players} my_player={@my_player} />
           <.rooms world={@world} />
           <.entities world={@world} />
           <.event_log world={@world} />
@@ -510,16 +510,24 @@ defmodule ConvoyWeb.SimLive do
     """
   end
 
+  attr :world, World, required: true
   attr :bases, :map, required: true
   attr :players, :map, required: true
   attr :my_player, :string, default: nil
 
+  # The Forge economy at a glance (primer §1). Each row reads left→right along the
+  # value pipeline: harvesters mine raw ⛏ ore, the base forges it into ◆ goods, and
+  # goods are either spent on R/C/F tech or loaded onto 🚚 convoys to sell at the
+  # market for 🏪 credits (the score). ⚒ is lifetime goods refined — a monotonic
+  # progress number, never spent down.
   defp scoreboard(assigns) do
     ~H"""
     <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
       <div class="flex items-center justify-between mb-2">
         <div class="text-xs uppercase tracking-wide text-slate-400">Players · Forge &amp; Convoy</div>
-        <div class="text-[10px] text-slate-500 font-mono">goods · R/C/F tech · refined · credits</div>
+        <div class="text-[10px] text-slate-500 font-mono" title="the value pipeline">
+          mine ⛏ → forge ◆ → ship 🏪
+        </div>
       </div>
       <%= if @bases == %{} do %>
         <div class="text-xs text-slate-500">No players yet — submit a bot to join.</div>
@@ -527,6 +535,8 @@ defmodule ConvoyWeb.SimLive do
       <div class="space-y-1">
         <%= for {player, base} <- Enum.sort_by(@bases, fn {_p, b} -> {-b.credits, -b.refined_total} end) do %>
           <% color = player_color(player) %>
+          <% harvesters = Enum.count(@world.entities, &(&1.owner == player and &1.kind == :harvester)) %>
+          <% convoys = Enum.count(@world.entities, &(&1.owner == player and &1.kind == :convoy)) %>
           <div class="flex items-center gap-2 text-sm">
             <span class={["w-2.5 h-2.5 rounded-full", color.dot]}></span>
             <span class={["font-mono", color.text]}>{player}</span>
@@ -538,18 +548,44 @@ defmodule ConvoyWeb.SimLive do
             >
               ⛔
             </span>
-            <span class="ml-auto flex items-center gap-2 font-mono text-xs">
-              <span class="text-sky-300" title="refined goods to spend">◆ {base.goods}</span>
-              <span class="text-slate-500" title="tech: refine / cargo / fuel">
+            <span class="ml-auto flex items-center gap-2.5 font-mono text-xs">
+              <span
+                class="text-slate-400"
+                title={"#{harvesters} harvesters mining · #{convoys} convoys en route to market"}
+              >
+                🤖 {harvesters} 🚚 {convoys}
+              </span>
+              <span class="text-amber-300/80" title="raw ore delivered to the base, waiting to be refined">
+                ⛏ {base.ore}
+              </span>
+              <span class="text-sky-300" title="refined goods on hand — spend on tech or ship to market">
+                ◆ {base.goods}
+              </span>
+              <span
+                class="text-slate-500"
+                title="tech levels — Refine (ore→goods rate) · Cargo (harvester capacity) · Fuel (compute/tick)"
+              >
                 R{base.tech.refine}·C{base.tech.cargo}·F{base.tech.fuel}
               </span>
-              <span class="text-emerald-300" title="lifetime refined">⚒ {base.refined_total}</span>
-              <span class="font-bold text-yellow-300 w-14 text-right" title="market credits (score)">
+              <span class="text-emerald-300" title="lifetime goods refined (never spent down)">
+                ⚒ {base.refined_total}
+              </span>
+              <span class="font-bold text-yellow-300 w-14 text-right" title="lifetime market payout — the score">
                 🏪 {base.credits}
               </span>
             </span>
           </div>
         <% end %>
+      </div>
+      <div class="mt-2 pt-2 border-t border-slate-800 text-[10px] text-slate-500 leading-relaxed">
+        <span class="text-slate-400">🤖</span> harvesters
+        <span class="text-slate-400">🚚</span> convoys ·
+        <span class="text-amber-300/80">⛏</span> raw ore ·
+        <span class="text-sky-300">◆</span> refined goods ·
+        <span class="text-slate-400">R/C/F</span>
+        refine/cargo/fuel tech ·
+        <span class="text-emerald-300">⚒</span> lifetime refined ·
+        <span class="text-yellow-300">🏪</span> credits (score)
       </div>
     </div>
     """
