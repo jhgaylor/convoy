@@ -58,7 +58,7 @@ defmodule Convoy.Examples do
       seeded?: false,
       tagline: "Convoy hunter (PvP)",
       blurb:
-        "Plays for the ambush, not the sale. Runs a lean economy and steers its own convoys to hunt and defend — seizing rivals' shipments on the contested market. Banks little itself; wins by taking everyone else's. Not running by default — field it to start a brawl."
+        "Plays for the ambush, not the sale. Runs a lean economy and steers its convoys to hunt — predicting where rivals will step and intercepting to seize their shipments on the contested market. Banks little itself; wins by taking everyone else's. Watch out for escorts. Not running by default — field it to start a brawl."
     }
   ]
 

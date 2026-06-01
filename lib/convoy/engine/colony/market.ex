@@ -8,10 +8,29 @@ defmodule Convoy.Engine.Colony.Market do
   stake is only the shipment in transit.
 
   Deterministic: convoys move per their owner's per-tick intent (advance / defend
-  / hunt / steer), capture resolves per-cell (defender beats a mover, else lowest
-  id), then arrivals sell. Convoy ids are region-global and start at
-  `@id_base` so they never collide with per-colony unit/building ids (which lets
-  the Region route a brain's command to a unit vs. a convoy by id range).
+  / hunt / steer), capture resolves per-cell as a **stance triangle**, then
+  arrivals sell. Convoy ids are region-global and start at `@id_base` so they
+  never collide with per-colony unit/building ids (which lets the Region route a
+  brain's command to a unit vs. a convoy by id range).
+
+  ## The stance triangle (PvP)
+
+  Each tick a convoy's stance is set by the intent it was issued: `:hunt` (raider),
+  `:defend` (escort), or passive (`:advance`/`:move`/just-launched). When enemy
+  convoys share a cell, a convoy is **defeated** (cargo seized, removed) when an
+  enemy on that cell holds a stance that *beats* it:
+
+      hunt  ⊳ passive   — a raider plunders an unguarded shipment
+      defend ⊳ hunt     — an escort turns the tables on the raider, taking its haul
+      defend ⊳ passive  — NO. a defender lets peaceful traffic pass.
+
+  No stance dominates: passive→(beaten by)→hunt→defend→(beats nothing else). A
+  defeated convoy's cargo goes to the lowest-id *surviving* enemy that beat it
+  (else it's lost in the melee). Two passive convoys crossing a cell don't fight —
+  raiding is an opt-in, counterable act, not an accident of geometry. This is what
+  kills the "park a defender on the drop point and farm everyone" exploit: a lone
+  defender seizes nothing from the passive stream; to plunder you must `hunt`
+  (which can be steered onto a target but loses to a co-located defender escort).
   """
 
   alias Convoy.Engine.Colony.Market
@@ -71,9 +90,16 @@ defmodule Convoy.Engine.Colony.Market do
     %{c | x: clamp(c.x + sign(dx), m.width), y: clamp(c.y + sign(dy), m.height), last_action: :move}
   end
 
+  # Steered hunt: hold the aggressive stance while the brain aims the step itself
+  # (predict where the shipment will be and intercept). Stance is :hunt regardless.
+  defp move_one(m, c, {:hunt, {dx, dy}}) do
+    %{c | x: clamp(c.x + sign(dx), m.width), y: clamp(c.y + sign(dy), m.height), last_action: :hunt}
+  end
+
+  # Auto-homing hunt: step toward the nearest enemy convoy (op 9 with dx=dy=0).
   defp move_one(m, c, {:hunt}) do
     case nearest_enemy(m, c) do
-      nil -> advance(m, c)
+      nil -> %{advance(m, c) | last_action: :hunt}
       e -> {dx, dy} = step_toward({c.x, c.y}, {e.x, e.y}); %{c | x: c.x + dx, y: c.y + dy, last_action: :hunt}
     end
   end
@@ -85,7 +111,9 @@ defmodule Convoy.Engine.Colony.Market do
     %{c | x: c.x + dx, y: c.y + dy, last_action: :advance}
   end
 
-  # --- capture (PvP): on a shared cell, one convoy seizes the others' shipments ---
+  # --- capture (PvP): the stance triangle. See the moduledoc. On a shared cell a
+  # convoy is defeated when an enemy there holds a stance that beats it; its cargo
+  # goes to the lowest-id surviving enemy that beat it. ---
 
   defp capture(%Market{convoys: cs} = m) do
     cs
@@ -94,25 +122,55 @@ defmodule Convoy.Engine.Colony.Market do
   end
 
   defp capture_cell(m, cell, group) do
-    owners = group |> Enum.map(& &1.owner) |> Enum.uniq()
+    sorted = Enum.sort_by(group, & &1.id)
+    losers = Enum.filter(sorted, fn c -> beaten?(sorted, c) end)
 
-    if length(owners) >= 2 do
-      sorted = Enum.sort_by(group, & &1.id)
-      winner = Enum.find(sorted, hd(sorted), &(&1.last_action == :defend))
-      losers = Enum.reject(sorted, &(&1.id == winner.id))
-      seized = losers |> Enum.map(& &1.cargo) |> Enum.sum()
+    if losers == [] do
+      m
+    else
       loser_ids = MapSet.new(losers, & &1.id)
+      survivors = Enum.reject(sorted, &MapSet.member?(loser_ids, &1.id))
+
+      # award each loser's cargo to the lowest-id surviving enemy that beat it
+      awards =
+        Enum.reduce(losers, %{}, fn l, acc ->
+          case Enum.find(survivors, fn s -> s.owner != l.owner and beats?(stance(s), stance(l)) end) do
+            nil -> acc
+            captor -> Map.update(acc, captor.id, l.cargo, &(&1 + l.cargo))
+          end
+        end)
 
       convoys =
         m.convoys
         |> Enum.reject(&MapSet.member?(loser_ids, &1.id))
-        |> Enum.map(fn c -> if c.id == winner.id, do: %{c | cargo: c.cargo + seized, last_action: :seize}, else: c end)
+        |> Enum.map(fn c ->
+          case Map.get(awards, c.id) do
+            nil -> c
+            gained -> %{c | cargo: c.cargo + gained, last_action: :seize}
+          end
+        end)
 
-      note(%{m | convoys: convoys}, "#{winner.owner}/C#{winner.id} seized #{seized} credits' worth at #{fmt(cell)}.")
-    else
-      m
+      # notes in captor-id order so the event log is replay-deterministic
+      awards
+      |> Enum.sort_by(fn {id, _} -> id end)
+      |> Enum.reduce(%{m | convoys: convoys}, fn {captor_id, gained}, acc ->
+        captor = Enum.find(survivors, &(&1.id == captor_id))
+        note(acc, "#{captor.owner}/C#{captor.id} seized #{gained} credits' worth at #{fmt(cell)}.")
+      end)
     end
   end
+
+  # A convoy is beaten if any ENEMY on its cell holds a stance that beats its own.
+  defp beaten?(group, c), do: Enum.any?(group, fn e -> e.owner != c.owner and beats?(stance(e), stance(c)) end)
+
+  defp stance(%{last_action: :defend}), do: :defend
+  defp stance(%{last_action: :hunt}), do: :hunt
+  defp stance(_), do: :passive
+
+  # the triangle: hunt plunders the passive, defend plunders hunters, nothing else.
+  defp beats?(:hunt, :passive), do: true
+  defp beats?(:defend, :hunt), do: true
+  defp beats?(_, _), do: false
 
   # --- selling: convoys reaching the market sell, crediting their owner ---
 

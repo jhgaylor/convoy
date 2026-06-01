@@ -274,7 +274,7 @@ defmodule Convoy.Engine.Colony.Region do
       Enum.reduce(cmds, {[], %{}}, fn cmd, {cc, ci} ->
         cond do
           cmd.op == @op_defend and MapSet.member?(own_ids, cmd.target) -> {cc, Map.put(ci, cmd.target, :defend)}
-          cmd.op == @op_hunt and MapSet.member?(own_ids, cmd.target) -> {cc, Map.put(ci, cmd.target, {:hunt})}
+          cmd.op == @op_hunt and MapSet.member?(own_ids, cmd.target) -> {cc, Map.put(ci, cmd.target, hunt_intent(cmd))}
           cmd.op == @op_move and MapSet.member?(own_ids, cmd.target) -> {cc, Map.put(ci, cmd.target, {:move, {cmd.a, cmd.b}})}
           Market.convoy_id?(cmd.target) -> {cc, ci}
           true -> {[cmd | cc], ci}
@@ -283,6 +283,11 @@ defmodule Convoy.Engine.Colony.Region do
 
     {Enum.reverse(colony), convoy}
   end
+
+  # hunt(convoy, dx, dy): a nonzero direction steers the raider (intercept where the
+  # shipment will be); dx=dy=0 auto-homes onto the nearest enemy (legacy behavior).
+  defp hunt_intent(%{a: 0, b: 0}), do: {:hunt}
+  defp hunt_intent(%{a: dx, b: dy}), do: {:hunt, {dx, dy}}
 
   # --- joins / demo ---
 

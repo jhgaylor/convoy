@@ -17,12 +17,18 @@ defmodule Convoy.Engine.Colony.SimTest do
   defp fixed(cmds), do: fn _w -> cmds end
 
   describe "command resolution" do
-    test "harvest takes ore from the unit's cell into its cargo" do
+    test "harvest meters ore from the unit's cell into its cargo (harvest_rate/tick)" do
       w = %{World.generate(seed: 1) | deposits: %{{0, 0} => 40}}
       [u | _] = w.units
+      # one tick mines harvest_rate (1) ore, not the whole cargo
       w2 = Sim.apply_commands(w, [%{op: 1, target: u.id, a: 0, b: 0}])
-      assert World.unit(w2, u.id).cargo == 5
-      assert World.deposit_at(w2, {0, 0}) == 35
+      assert World.unit(w2, u.id).cargo == 1
+      assert World.deposit_at(w2, {0, 0}) == 39
+
+      # repeated HARVEST fills cargo one unit at a time, up to cargo_max (5)
+      w7 = Enum.reduce(1..6, w, fn _, acc -> Sim.apply_commands(acc, [%{op: 1, target: u.id, a: 0, b: 0}]) end)
+      assert World.unit(w7, u.id).cargo == 5
+      assert World.deposit_at(w7, {0, 0}) == 35
     end
 
     test "move steps the unit and clamps to the grid" do
