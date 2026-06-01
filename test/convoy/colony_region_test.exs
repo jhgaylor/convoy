@@ -49,6 +49,34 @@ defmodule Convoy.Engine.Colony.RegionTest do
     end
   end
 
+  test "a region records a downsampled metrics time-series as it ticks" do
+    id = fresh_id()
+    Region.ensure(id, seed: 1)
+    Region.pause(id)
+
+    s0 = Region.snapshot(id)
+    assert Map.has_key?(s0, :history)
+
+    if s0.colonies != %{} do
+      [player | _] = Map.keys(s0.colonies)
+      assert s0.history[player] in [nil, []]
+
+      for _ <- 1..60, do: Region.step(id)
+      s1 = Region.snapshot(id)
+      series = s1.history[player]
+
+      assert is_list(series) and series != [], "history should accumulate for an active colony"
+      # sampled every 20 ticks → ticks 20/40/60, newest-first
+      assert Enum.all?(series, &(rem(&1.t, 20) == 0))
+      assert [%{t: latest} | _] = series
+      assert latest >= 40
+      assert Enum.all?(series, &Map.has_key?(&1, :credits))
+    else
+      IO.puts("\n[skip] no colonies loaded (priv/colony/*.wasm unavailable in test build)")
+      assert true
+    end
+  end
+
   test "the `main` region seeds demo + shipper + builder residents" do
     Region.ensure("main", seed: 1)
     s = Region.snapshot("main")

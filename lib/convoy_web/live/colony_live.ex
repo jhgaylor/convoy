@@ -46,6 +46,7 @@ defmodule ConvoyWeb.ColonyLive do
      |> assign(:active_tab, :rust)
      |> assign(:show_help, false)
      |> assign(:show_ref, false)
+     |> assign(:show_metrics, false)
      |> assign(:examples, Examples.all())
      |> assign(:open_example, nil)
      |> assign(:example_error, nil)
@@ -65,6 +66,7 @@ defmodule ConvoyWeb.ColonyLive do
   def handle_event("set_tab", %{"tab" => tab}, socket), do: {:noreply, assign(socket, :active_tab, String.to_existing_atom(tab))}
   def handle_event("toggle_help", _, socket), do: {:noreply, update(socket, :show_help, &(not &1))}
   def handle_event("toggle_ref", _, socket), do: {:noreply, update(socket, :show_ref, &(not &1))}
+  def handle_event("toggle_metrics", _, socket), do: {:noreply, update(socket, :show_metrics, &(not &1))}
   def handle_event("validate_upload", params, socket), do: {:noreply, assign(socket, :upload_player, clean(params["player"], socket.assigns.upload_player))}
 
   def handle_event("toggle_example", %{"id" => id}, socket) do
@@ -147,6 +149,7 @@ defmodule ConvoyWeb.ColonyLive do
     |> assign(:colonies, snap.colonies)
     |> assign(:market, snap.market)
     |> assign(:players, snap.players)
+    |> assign(:history, Map.get(snap, :history, %{}))
     |> assign(:last_fuel, snap.last_fuel)
   end
 
@@ -223,6 +226,8 @@ defmodule ConvoyWeb.ColonyLive do
           <.legend />
         </section>
       </div>
+
+      <.metrics_modal show={@show_metrics} history={@history} players={@players} />
     </div>
     """
   end
@@ -359,7 +364,10 @@ defmodule ConvoyWeb.ColonyLive do
   defp scoreboard(assigns) do
     ~H"""
     <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
-      <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Scoreboard · credits</div>
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-xs uppercase tracking-wide text-slate-400">Scoreboard · credits</div>
+        <button phx-click="toggle_metrics" class="text-[11px] text-sky-400 hover:text-sky-300" title="metrics over time">📈 trends</button>
+      </div>
       <%= if @players == [] do %>
         <div class="text-xs text-slate-500">No colonies yet — upload a bot to join.</div>
       <% end %>
@@ -635,6 +643,118 @@ defmodule ConvoyWeb.ColonyLive do
     """
   end
 
+  # --- metrics over time (server-rendered SVG line charts) ---
+
+  @chart_w 300
+  @chart_h 80
+
+  attr :show, :boolean, required: true
+  attr :history, :map, required: true
+  attr :players, :list, required: true
+
+  defp metrics_modal(assigns) do
+    ~H"""
+    <div
+      :if={@show}
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+      phx-window-keydown="toggle_metrics"
+      phx-key="Escape"
+    >
+      <div class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" phx-click="toggle_metrics"></div>
+      <div class="relative bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-bold">📈 Metrics over time</h2>
+          <button phx-click="toggle_metrics" class="text-slate-400 hover:text-slate-200 text-xl leading-none" title="close (Esc)">✕</button>
+        </div>
+
+        <%= if @players == [] or not Enum.any?(@players, &Map.has_key?(@history, &1.id)) do %>
+          <div class="text-sm text-slate-500">No history yet — let the sim run a few ticks, then reopen.</div>
+        <% else %>
+          <div class="flex flex-wrap gap-3 mb-4 text-xs">
+            <%= for p <- @players do %>
+              <% c = color(p.id) %>
+              <span class="flex items-center gap-1.5">
+                <span class={["w-2.5 h-2.5 rounded-full", c.dot]}></span>
+                <span class={["font-mono", c.text]}>{p.id}</span>
+              </span>
+            <% end %>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <.metric_chart title="🏪 Credits (score)" key={:credits} history={@history} players={@players} />
+            <.metric_chart title="⚒ Refined" key={:refined} history={@history} players={@players} />
+            <.metric_chart title="🤖 Population" key={:pop} history={@history} players={@players} />
+            <.metric_chart title="🚚 Convoys" key={:convoys} history={@history} players={@players} />
+          </div>
+
+          <p class="text-[11px] text-slate-600 mt-4">Sampled periodically as the sim runs; left → right is oldest → now. Each line is a colony.</p>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :title, :string, required: true
+  attr :key, :atom, required: true
+  attr :history, :map, required: true
+  attr :players, :list, required: true
+
+  defp metric_chart(assigns) do
+    assigns = assign(assigns, :maxv, chart_max(assigns.history, assigns.players, assigns.key))
+
+    ~H"""
+    <div class="bg-slate-950 border border-slate-800 rounded-lg p-3">
+      <div class="flex items-center justify-between mb-1">
+        <div class="text-xs uppercase tracking-wide text-slate-400">{@title}</div>
+        <div class="text-[10px] font-mono text-slate-600">peak {@maxv}</div>
+      </div>
+      <svg viewBox="0 0 300 80" preserveAspectRatio="none" class="w-full h-24">
+        <line x1="0" y1="80" x2="300" y2="80" stroke="#1e293b" stroke-width="1" />
+        <%= for p <- @players do %>
+          <polyline
+            points={polyline(series_points(@history, p.id), @key, @maxv)}
+            fill="none"
+            stroke={color(p.id).stroke}
+            stroke-width="1.5"
+            stroke-linejoin="round"
+            vector-effect="non-scaling-stroke"
+          />
+        <% end %>
+      </svg>
+    </div>
+    """
+  end
+
+  # history is stored newest-first; reverse to plot oldest → newest, left → right.
+  defp series_points(history, pid), do: history |> Map.get(pid, []) |> Enum.reverse()
+
+  defp chart_max(history, players, key) do
+    players
+    |> Enum.flat_map(fn p -> Map.get(history, p.id, []) end)
+    |> Enum.map(&Map.get(&1, key, 0))
+    |> Enum.max(fn -> 0 end)
+    |> max(1)
+  end
+
+  defp polyline([], _key, _maxv), do: ""
+
+  defp polyline([pt], key, maxv) do
+    y = yval(pt, key, maxv)
+    "0,#{y} #{@chart_w},#{y}"
+  end
+
+  defp polyline(points, key, maxv) do
+    n = length(points)
+
+    points
+    |> Enum.with_index()
+    |> Enum.map(fn {pt, i} -> "#{fmt(i * @chart_w / (n - 1))},#{yval(pt, key, maxv)}" end)
+    |> Enum.join(" ")
+  end
+
+  defp yval(pt, key, maxv), do: fmt(@chart_h - Map.get(pt, key, 0) / maxv * @chart_h)
+  defp fmt(n), do: :erlang.float_to_binary(n * 1.0, decimals: 1)
+
   # --- cell rendering ---
 
   defp colony_cell(colony, {x, y} = pos, color) do
@@ -688,12 +808,12 @@ defmodule ConvoyWeb.ColonyLive do
   defp score(players, id), do: (Enum.find(players, &(&1.id == id)) || %{credits: 0}).credits
 
   @palette [
-    %{dot: "bg-emerald-400", text: "text-emerald-300", cell: "bg-emerald-600"},
-    %{dot: "bg-sky-400", text: "text-sky-300", cell: "bg-sky-600"},
-    %{dot: "bg-fuchsia-400", text: "text-fuchsia-300", cell: "bg-fuchsia-600"},
-    %{dot: "bg-amber-400", text: "text-amber-300", cell: "bg-amber-600"},
-    %{dot: "bg-rose-400", text: "text-rose-300", cell: "bg-rose-600"},
-    %{dot: "bg-cyan-400", text: "text-cyan-300", cell: "bg-cyan-600"}
+    %{dot: "bg-emerald-400", text: "text-emerald-300", cell: "bg-emerald-600", stroke: "#34d399"},
+    %{dot: "bg-sky-400", text: "text-sky-300", cell: "bg-sky-600", stroke: "#38bdf8"},
+    %{dot: "bg-fuchsia-400", text: "text-fuchsia-300", cell: "bg-fuchsia-600", stroke: "#e879f9"},
+    %{dot: "bg-amber-400", text: "text-amber-300", cell: "bg-amber-600", stroke: "#fbbf24"},
+    %{dot: "bg-rose-400", text: "text-rose-300", cell: "bg-rose-600", stroke: "#fb7185"},
+    %{dot: "bg-cyan-400", text: "text-cyan-300", cell: "bg-cyan-600", stroke: "#22d3ee"}
   ]
 
   defp color(player_id), do: Enum.at(@palette, rem(:erlang.phash2(player_id), length(@palette)))

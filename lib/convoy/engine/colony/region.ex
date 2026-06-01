@@ -24,6 +24,12 @@ defmodule Convoy.Engine.Colony.Region do
   @height 12
   @snapshot_every 50
 
+  # Spectator time-series: sample each colony's headline metrics every
+  # @history_every ticks, keeping the last @history_max points (newest-first).
+  # 180 points × 20 ticks ≈ 3600 ticks (~24 min at the 1x 400ms speed).
+  @history_every 20
+  @history_max 180
+
   @doc "Bring every persisted colony region back online (called on boot)."
   def restore_all do
     if Application.get_env(:convoy, :restore_on_boot, true) do
@@ -109,6 +115,7 @@ defmodule Convoy.Engine.Colony.Region do
       tick: 0,
       tick_ms: Keyword.get(opts, :tick_ms, @default_ms),
       last_fuel: %{},
+      history: %{},
       observers: MapSet.new()
     }
 
@@ -153,7 +160,7 @@ defmodule Convoy.Engine.Colony.Region do
   def handle_cast({:reset, seed}, state) do
     # regenerate every player's colony + a fresh market, keep their brains
     colonies = Map.new(state.colonies, fn {p, _} -> {p, World.generate(seed: colony_seed(seed, p))} end)
-    state = %{state | seed: seed, colonies: colonies, market: Market.new(@width, @height), tick: 0}
+    state = %{state | seed: seed, colonies: colonies, market: Market.new(@width, @height), tick: 0, history: %{}}
     {:noreply, broadcast(persist(state))}
   end
 
@@ -194,9 +201,32 @@ defmodule Convoy.Engine.Colony.Region do
     colonies = Enum.reduce(credits, colonies, fn {owner, amt}, cs -> Map.update!(cs, owner, &World.credit(&1, amt)) end)
 
     %{state | colonies: colonies, market: market, tick: state.tick + 1, last_fuel: fuels}
+    |> record_history()
   rescue
     _ -> state
   end
+
+  # Append a metrics sample for every colony every @history_every ticks. Stored
+  # newest-first, trimmed to @history_max — bounded memory, snapshot-friendly.
+  defp record_history(%{tick: t} = state) when rem(t, @history_every) == 0 do
+    history =
+      Enum.reduce(state.colonies, state.history, fn {p, w}, acc ->
+        point = %{
+          t: t,
+          credits: w.credits,
+          refined: w.refined_total,
+          pop: World.population(w),
+          convoys: length(Market.convoys_of(state.market, p))
+        }
+
+        series = [point | Map.get(acc, p, [])] |> Enum.take(@history_max)
+        Map.put(acc, p, series)
+      end)
+
+    %{state | history: history}
+  end
+
+  defp record_history(state), do: state
 
   defp run_brain(%{inst: inst}, colony, market, player) when not is_nil(inst) do
     {:ok, cmds, used} = ColonyWasm.tick(inst, view_for(colony, market, player), @fuel)
@@ -297,6 +327,7 @@ defmodule Convoy.Engine.Colony.Region do
           status: snap.status,
           colonies: colonies,
           market: snap.market,
+          history: Map.get(snap, :history, %{}),
           brains: brains
       }
     else
@@ -345,6 +376,7 @@ defmodule Convoy.Engine.Colony.Region do
       status: state.status,
       colonies: state.colonies,
       market: state.market,
+      history: state.history,
       players: players
     })
 
@@ -395,6 +427,7 @@ defmodule Convoy.Engine.Colony.Region do
       colonies: state.colonies,
       market: state.market,
       players: players,
+      history: state.history,
       last_fuel: state.last_fuel |> Map.values() |> Enum.sum()
     }
   end
