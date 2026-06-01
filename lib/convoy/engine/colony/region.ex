@@ -26,9 +26,10 @@ defmodule Convoy.Engine.Colony.Region do
 
   # Spectator time-series: sample each colony's headline metrics every
   # @history_every ticks, keeping the last @history_max points (newest-first).
-  # 180 points × 20 ticks ≈ 3600 ticks (~24 min at the 1x 400ms speed).
+  # 240 points × 20 ticks ≈ 4800 ticks (~32 min at the 1x 400ms speed), enough
+  # to back the spectator's 30m window.
   @history_every 20
-  @history_max 180
+  @history_max 240
 
   @doc "Bring every persisted colony region back online (called on boot)."
   def restore_all do
@@ -69,6 +70,9 @@ defmodule Convoy.Engine.Colony.Region do
 
   @doc "Submit/replace a player's colony brain (compiled wasm/wat bytes). Joins the player if new."
   def submit_player(id, player, exec, display), do: call(id, {:submit, clean(player), exec, display})
+
+  @doc "Evict a player: drop their colony, brain, convoys, history, and stop their wasm."
+  def kick(id, player), do: call(id, {:kick, clean(player)})
 
   @doc "Ids of all live colony regions."
   def list, do: Registry.select(Convoy.Engine.ColonyRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
@@ -149,6 +153,22 @@ defmodule Convoy.Engine.Colony.Region do
         broadcast(state)
         {:reply, {:error, msg}, state}
     end
+  end
+
+  def handle_call({:kick, player}, _from, state) do
+    ColonyWasm.stop(get_in(state.brains, [player, :inst]))
+
+    state =
+      state
+      |> update_in([Access.key(:colonies)], &Map.delete(&1, player))
+      |> update_in([Access.key(:brains)], &Map.delete(&1, player))
+      |> update_in([Access.key(:last_fuel)], &Map.delete(&1, player))
+      |> update_in([Access.key(:history)], &Map.delete(&1, player))
+      |> update_in([Access.key(:market)], &Market.drop_owner(&1, player))
+      |> persist()
+
+    broadcast(state)
+    {:reply, :ok, state}
   end
 
   @impl true

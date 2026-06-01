@@ -49,6 +49,30 @@ defmodule Convoy.Engine.Colony.RegionTest do
     end
   end
 
+  test "kicking a player removes their colony, brain, convoys, and history" do
+    id = fresh_id()
+    Region.ensure(id, seed: 1)
+    Region.pause(id)
+
+    s0 = Region.snapshot(id)
+
+    if Enum.any?(s0.players, &(&1.id == "demo")) do
+      # run enough ticks that the demo has launched convoys + accrued history
+      for _ <- 1..220, do: Region.step(id)
+
+      assert :ok = Region.kick(id, "demo")
+
+      s1 = Region.snapshot(id)
+      refute Enum.any?(s1.players, &(&1.id == "demo"))
+      refute Map.has_key?(s1.colonies, "demo")
+      assert s1.history["demo"] in [nil, []]
+      assert Enum.all?(s1.market.convoys, &(&1.owner != "demo"))
+    else
+      IO.puts("\n[skip] demo colony not loaded (priv/colony/default.wasm unavailable in test build)")
+      assert true
+    end
+  end
+
   test "a region records a downsampled metrics time-series as it ticks" do
     id = fresh_id()
     Region.ensure(id, seed: 1)

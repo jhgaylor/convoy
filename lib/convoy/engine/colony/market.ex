@@ -41,6 +41,9 @@ defmodule Convoy.Engine.Colony.Market do
   @doc "Convoys owned by `owner` (for building a colony's market view)."
   def convoys_of(%Market{convoys: cs}, owner), do: Enum.filter(cs, &(&1.owner == owner))
 
+  @doc "Remove every convoy owned by `owner` (used when a player is kicked)."
+  def drop_owner(%Market{convoys: cs} = m, owner), do: %{m | convoys: Enum.reject(cs, &(&1.owner == owner))}
+
   @doc """
   Advance the market one tick: move convoys per `intents` (`%{convoy_id =>
   :advance | :defend | {:hunt} | {:move, {dx,dy}}}`, default `:advance`), resolve

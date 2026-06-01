@@ -3,7 +3,8 @@ defmodule ConvoyWeb.ColonyAdminLive do
   Ops overview for colony regions: every live region with its tick / status /
   player count / credits / convoys, plus persisted-but-stopped regions rebuilt
   from their snapshots. Controls: pause/play/step/reset, stop (free compute, keep
-  the snapshot), resume, and delete. Put behind auth before exposing publicly.
+  the snapshot), resume, delete, and kick (evict an individual player from a live
+  region). Put behind auth before exposing publicly.
   """
   use ConvoyWeb, :live_view
 
@@ -31,6 +32,9 @@ defmodule ConvoyWeb.ColonyAdminLive do
   def handle_event("stop", %{"id" => id}, s), do: act(s, fn -> Region.stop(id) end)
   def handle_event("resume", %{"id" => id}, s), do: act(s, fn -> Region.ensure(id) end)
   def handle_event("delete", %{"id" => id}, s), do: act(s, fn -> Region.delete(id) end)
+
+  def handle_event("kick", %{"id" => id, "player" => player}, s),
+    do: act(s, fn -> Region.kick(id, player) end)
 
   defp act(socket, fun) do
     fun.()
@@ -63,6 +67,7 @@ defmodule ConvoyWeb.ColonyAdminLive do
       status: s.status,
       tick: s.tick,
       players: length(s.players),
+      player_ids: Enum.map(s.players, & &1.id),
       credits: Enum.sum(Enum.map(s.players, & &1.credits)),
       convoys: length(s.market.convoys)
     }
@@ -79,6 +84,7 @@ defmodule ConvoyWeb.ColonyAdminLive do
           status: :stopped,
           tick: Map.get(snap, :tick, 0),
           players: map_size(Map.get(snap, :colonies, %{})),
+          player_ids: [],
           credits: snap |> Map.get(:colonies, %{}) |> Map.values() |> Enum.map(& &1.credits) |> Enum.sum(),
           convoys: length(Map.get(snap, :market, %Market{}).convoys)
         }
@@ -132,7 +138,26 @@ defmodule ConvoyWeb.ColonyAdminLive do
                 ]}>{r.status}</span>
               </td>
               <td class="pr-4 font-mono">{r.tick}</td>
-              <td class="pr-4 font-mono">{r.players}</td>
+              <td class="pr-4 font-mono align-top">
+                <div>{r.players}</div>
+                <%= if r.live and r.player_ids != [] do %>
+                  <div class="flex flex-col gap-0.5 mt-1">
+                    <%= for p <- r.player_ids do %>
+                      <span class="inline-flex items-center gap-1 text-[11px] text-slate-400">
+                        <span class="truncate max-w-[8rem]">{p}</span>
+                        <button
+                          phx-click="kick"
+                          phx-value-id={r.id}
+                          phx-value-player={p}
+                          data-confirm={"Kick #{p} from #{r.id}? Their colony, convoys, and program are removed."}
+                          class="px-1 rounded bg-rose-900/60 hover:bg-rose-800 text-rose-200"
+                          title={"Kick #{p}"}
+                        >✕</button>
+                      </span>
+                    <% end %>
+                  </div>
+                <% end %>
+              </td>
               <td class="pr-4 font-mono text-yellow-300">{r.credits}</td>
               <td class="pr-4 font-mono">{r.convoys}</td>
               <td class="py-1">
