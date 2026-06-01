@@ -83,9 +83,10 @@ defmodule Convoy.Engine.Colony.Region do
       observers: MapSet.new()
     }
 
-    # Seed a `demo` colony running the bundled default bot so the page is alive
-    # out of the box and soloists always have an opponent at the market.
-    state = maybe_seed_demo(state)
+    # Seed bundled bot colonies so the room is alive out of the box. Every region
+    # gets `demo`; the public `main` room also gets a `shipper` and a `builder`
+    # with distinct strategies, so its market is genuinely contested.
+    state = seed_residents(state)
     {:ok, schedule(state)}
   end
 
@@ -214,15 +215,25 @@ defmodule Convoy.Engine.Colony.Region do
 
   defp colony_seed(seed, player), do: :erlang.phash2({seed, player})
 
-  defp maybe_seed_demo(state) do
-    path = Path.join(:code.priv_dir(:convoy), "colony/default.wasm")
+  defp seed_residents(state) do
+    extra =
+      if state.id == "main",
+        do: [{"shipper", "shipper.wasm", "examples/colony_shipper.rs"}, {"builder", "builder.wasm", "examples/colony_builder.rs"}],
+        else: []
+
+    residents = [{"demo", "default.wasm", "examples/colony.rs"} | extra]
+    Enum.reduce(residents, state, fn {name, file, display}, acc -> load_resident(acc, name, file, display) end)
+  end
+
+  defp load_resident(state, name, file, display) do
+    path = Path.join(:code.priv_dir(:convoy), "colony/#{file}")
 
     with true <- File.exists?(path),
          {:ok, bytes} <- File.read(path),
          {:ok, inst} <- ColonyWasm.instantiate(bytes) do
       state
-      |> ensure_colony("demo")
-      |> put_in([Access.key(:brains), "demo"], %{inst: inst, display: "default bot (examples/colony.rs)", error: nil})
+      |> ensure_colony(name)
+      |> put_in([Access.key(:brains), name], %{inst: inst, display: display, error: nil})
     else
       _ -> state
     end

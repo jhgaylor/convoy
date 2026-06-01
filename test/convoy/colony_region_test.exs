@@ -48,4 +48,19 @@ defmodule Convoy.Engine.Colony.RegionTest do
         assert true
     end
   end
+
+  test "the `main` region seeds demo + shipper + builder residents" do
+    Region.ensure("main", seed: 1)
+    s = Region.snapshot("main")
+    ids = Enum.map(s.players, & &1.id)
+
+    # all three bundled residents load (skip if priv wasm isn't in the test build)
+    if "demo" in ids do
+      assert "shipper" in ids
+      assert "builder" in ids
+    else
+      IO.puts("\n[skip] residents not loaded (priv/colony/*.wasm unavailable in test build)")
+      assert true
+    end
+  end
 end

@@ -240,17 +240,12 @@ fn colony_logic(out: &mut Out) {
         }
     }
 
-    // Colony-level: build a second refinery when flush, then grow the fleet.
-    // Invalid placements/over-cap spawns are no-ops the sim rejects — we don't
-    // have to be perfect, just intentful.
-    if goods >= 40 && refineries < 2 && !refinery_building {
-        // throughput first: build up to two refineries before shipping. Each goes
-        // in its own cell (spawner_x+1, +2, …) so the second isn't rejected.
-        let (px, py) = (spawner_x + 1 + refineries, spawner_y);
+    // SHIPPER strategy: one refinery, then ship aggressively. Floods the market
+    // with cheap early convoys — out-volumes rivals before they're set up.
+    if goods >= 40 && refineries < 1 && !refinery_building {
+        let (px, py) = (spawner_x + 1, spawner_y);
         out.push(OP_BUILD, 0, BLD_REFINERY as i32, ((px << 8) | py) as i32);
-    } else if refineries >= 1 && goods >= 25 {
-        // once refining, ship surplus goods to the market for credits (the score).
-        // Convoys auto-advance to market; collisions with rivals are PvP.
+    } else if refineries >= 1 && goods >= 20 {
         out.push(OP_LAUNCH, 0, 0, 0);
     } else if goods >= 20 && n_units < 6 {
         out.push(OP_SPAWN, 0, UNIT_HARVESTER as i32, 0);
