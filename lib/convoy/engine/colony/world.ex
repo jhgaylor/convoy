@@ -28,6 +28,10 @@ defmodule Convoy.Engine.Colony.World do
     height: 12,
     start_units: 2,
     cargo_max: 5,
+    # mining is metered: a harvester pulls at most this much ore/tick while on a
+    # deposit, so filling cargo takes `cargo_max / harvest_rate` ticks on-site
+    # (paced like build/spawn/refine, not the old instant-scoop).
+    harvest_rate: 1,
     # buildings: goods cost + construction time (ticks) — the time+cost pacing engine
     build_cost_refinery: 40,
     build_time_refinery: 30,
@@ -50,10 +54,14 @@ defmodule Convoy.Engine.Colony.World do
     # convoys: goods spent to load one, credits a delivered shipment earns
     shipment_size: 20,
     shipment_value: 30,
-    # resource layout / replenishment
+    # resource layout / replenishment: deposits genuinely deplete; ore trickles
+    # back slowly (one fresh deposit every `replenish_interval` ticks, only while
+    # below `replenish_target`) so mining a patch out creates a real scarcity
+    # window without ever permanently starving a colony in the persistent world.
     resource_nodes: 6,
     resource_amount: 40,
-    replenish_threshold: 1
+    replenish_interval: 30,
+    replenish_target: 4
   }
 
   defstruct seed: 1,

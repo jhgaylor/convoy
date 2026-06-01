@@ -66,7 +66,7 @@ defmodule Convoy.Engine.Colony.Sim do
         space = u.cargo_max - u.cargo
 
         if available > 0 and space > 0 do
-          taken = min(available, space)
+          taken = Enum.min([cfg(world, :harvest_rate), space, available])
 
           world
           |> World.deplete(pos, taken)
@@ -141,10 +141,11 @@ defmodule Convoy.Engine.Colony.Sim do
   # Unknown / idle / upgrade / convoy-steering (handled by the Region) — no-op here.
   defp resolve(world, _cmd), do: world
 
-  # --- replenishment (keep a colony from mining itself to a dead end) ---
+  # --- replenishment (slow trickle: scarcity that recovers, never a dead end) ---
 
   defp replenish(%World{} = world) do
-    if map_size(world.deposits) <= cfg(world, :replenish_threshold) do
+    if rem(world.tick, cfg(world, :replenish_interval)) == 0 and
+         map_size(world.deposits) < cfg(world, :replenish_target) do
       pos = free_cell(world)
       World.note(%{world | deposits: Map.put(world.deposits, pos, cfg(world, :resource_amount))}, "A new ore deposit appeared at #{fmt(pos)}.")
     else
