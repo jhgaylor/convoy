@@ -11,8 +11,21 @@ defmodule ConvoyWeb.SimLive do
 
   alias Convoy.{Engine, Loader, Compile, Version}
   alias Convoy.Engine.{World, Wasm}
+  alias ConvoyWeb.Sparkline
 
   @speeds [{"0.5x", 800}, {"1x", 400}, {"2x", 200}, {"4x", 100}]
+
+  # Smoothing window (in ticks) for the trends panel's d/dt and d²/dt² series.
+  @deriv_window 5
+
+  # Which base stats get the value + rate + acceleration treatment, in order.
+  @trend_stats [
+    {:credits, "🏪 credits"},
+    {:refined, "⚒ refined"},
+    {:goods, "◆ goods"},
+    {:ore, "⛏ ore"},
+    {:fleet, "🚚 fleet"}
+  ]
 
   # Source-file extensions we accept (browser upload + language inference).
   @ext_lang %{
@@ -50,6 +63,7 @@ defmodule ConvoyWeb.SimLive do
      |> assign(:upload_player, "p1")
      |> assign(:upload_error, nil)
      |> assign(:my_player, nil)
+     |> assign(:show_trends, true)
      |> assign_snapshot(Engine.snapshot(id))
      # accept: :any — several of our extensions (.rs/.go/.wat) aren't registered
      # MIME types, which allow_upload's filter rejects. We validate the
@@ -62,6 +76,10 @@ defmodule ConvoyWeb.SimLive do
   @impl true
   def handle_event("set_tab", %{"tab" => tab}, socket) do
     {:noreply, assign(socket, :active_tab, String.to_existing_atom(tab))}
+  end
+
+  def handle_event("toggle_trends", _params, socket) do
+    {:noreply, update(socket, :show_trends, &(not &1))}
   end
 
   def handle_event("validate_upload", params, socket) do
@@ -167,6 +185,7 @@ defmodule ConvoyWeb.SimLive do
     |> assign(:scores, snap.scores)
     |> assign(:bases, snap.bases)
     |> assign(:players, snap.players)
+    |> assign(:history, Map.get(snap, :history, []))
   end
 
   # Each tab: the starter code + how to submit it. `toolchain?` flags languages
@@ -312,6 +331,7 @@ defmodule ConvoyWeb.SimLive do
         <section class="space-y-4">
           <.controls status={@status} speeds={@speeds} tick_ms={@tick_ms} seed={@seed} />
           <.scoreboard world={@world} bases={@bases} players={@players} my_player={@my_player} />
+          <.trends history={@history} bases={@bases} show={@show_trends} />
           <.rooms world={@world} />
           <.entities world={@world} />
           <.event_log world={@world} />
@@ -572,10 +592,16 @@ defmodule ConvoyWeb.SimLive do
               >
                 🤖 {harvesters} 🚚 {convoys}
               </span>
-              <span class="text-amber-300/80" title="raw ore delivered to the base, waiting to be refined">
+              <span
+                class="text-amber-300/80"
+                title="raw ore delivered to the base, waiting to be refined"
+              >
                 ⛏ {base.ore}
               </span>
-              <span class="text-sky-300" title="refined goods on hand — spend on tech or ship to market">
+              <span
+                class="text-sky-300"
+                title="refined goods on hand — spend on tech or ship to market"
+              >
                 ◆ {base.goods}
               </span>
               <span
@@ -587,7 +613,10 @@ defmodule ConvoyWeb.SimLive do
               <span class="text-emerald-300" title="lifetime goods refined (never spent down)">
                 ⚒ {base.refined_total}
               </span>
-              <span class="font-bold text-yellow-300 w-14 text-right" title="lifetime market payout — the score">
+              <span
+                class="font-bold text-yellow-300 w-14 text-right"
+                title="lifetime market payout — the score"
+              >
                 🏪 {base.credits}
               </span>
             </span>
@@ -595,15 +624,127 @@ defmodule ConvoyWeb.SimLive do
         <% end %>
       </div>
       <div class="mt-2 pt-2 border-t border-slate-800 text-[10px] text-slate-500 leading-relaxed">
-        <span class="text-slate-400">🤖</span> harvesters
-        <span class="text-slate-400">🚚</span> convoys ·
-        <span class="text-amber-300/80">⛏</span> raw ore ·
-        <span class="text-sky-300">◆</span> refined goods ·
-        <span class="text-slate-400">R/C/F</span>
-        refine/cargo/fuel tech ·
-        <span class="text-emerald-300">⚒</span> lifetime refined ·
-        <span class="text-yellow-300">🏪</span> credits (score)
+        <span class="text-slate-400">🤖</span>
+        harvesters <span class="text-slate-400">🚚</span>
+        convoys · <span class="text-amber-300/80">⛏</span>
+        raw ore · <span class="text-sky-300">◆</span>
+        refined goods · <span class="text-slate-400">R/C/F</span>
+        refine/cargo/fuel tech · <span class="text-emerald-300">⚒</span>
+        lifetime refined · <span class="text-yellow-300">🏪</span>
+        credits (score)
       </div>
+    </div>
+    """
+  end
+
+  attr :history, :list, required: true
+  attr :bases, :map, required: true
+  attr :show, :boolean, default: true
+
+  # Stat-over-time panel: for each player, a small-multiple of sparklines per
+  # stat — the value itself, its rate of change (d/dt), and the rate at which
+  # *that* rate is changing (d²/dt²). Pure server-rendered SVG off the region's
+  # telemetry buffer; it updates in place on every tick like the scoreboard.
+  defp trends(assigns) do
+    assigns = assign(assigns, :window, @deriv_window)
+
+    ~H"""
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-xs uppercase tracking-wide text-slate-400">
+          Trends · rate &amp; acceleration
+        </div>
+        <button
+          type="button"
+          phx-click="toggle_trends"
+          class="text-[10px] text-slate-500 hover:text-slate-300"
+        >
+          {if @show, do: "hide ▲", else: "show ▼"}
+        </button>
+      </div>
+
+      <%= if @show do %>
+        <%= if length(@history) >= 3 do %>
+          <div class="text-[10px] text-slate-500 mb-2 leading-relaxed">
+            each stat, left→right: <span class="text-slate-300">value</span>
+            · <span class="text-slate-300">d/dt</span>
+            rate · <span class="text-slate-300">d²/dt²</span>
+            acceleration <span class="text-slate-600">— per tick, smoothed over {@window} ticks</span>
+          </div>
+          <div class="space-y-3">
+            <%= for {player, _b} <- Enum.sort_by(@bases, fn {_p, b} -> {-b.credits, -b.refined_total} end) do %>
+              <.player_trends history={@history} player={player} color={player_color(player)} />
+            <% end %>
+          </div>
+        <% else %>
+          <div class="text-xs text-slate-500">
+            Gathering data — charts appear after a few ticks of play.
+          </div>
+        <% end %>
+      <% end %>
+    </div>
+    """
+  end
+
+  attr :history, :list, required: true
+  attr :player, :string, required: true
+  attr :color, :map, required: true
+
+  defp player_trends(assigns) do
+    rows =
+      Enum.map(@trend_stats, fn {key, label} ->
+        value = Sparkline.series(assigns.history, assigns.player, key)
+        d1 = Sparkline.derivative(value, @deriv_window)
+        d2 = Sparkline.derivative(d1, @deriv_window)
+        %{label: label, value: value, d1: d1, d2: d2}
+      end)
+
+    assigns = assign(assigns, :rows, rows)
+
+    ~H"""
+    <div class="border border-slate-800 rounded-md p-2">
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class={["w-2 h-2 rounded-full", @color.dot]}></span>
+        <span class={["font-mono text-xs", @color.text]}>{@player}</span>
+      </div>
+      <div class="grid grid-cols-[4.5rem_1fr_1fr_1fr] items-center gap-x-2 gap-y-1">
+        <div></div>
+        <div class="text-[9px] text-slate-500 text-center">value</div>
+        <div class="text-[9px] text-slate-500 text-center">d/dt</div>
+        <div class="text-[9px] text-slate-500 text-center">d²/dt²</div>
+        <%= for r <- @rows do %>
+          <div class="text-[10px] font-mono text-slate-400">{r.label}</div>
+          <.trend_cell series={r.value} stroke={@color.stroke} kind={:value} />
+          <.trend_cell series={r.d1} stroke="#94a3b8" kind={:rate} baseline />
+          <.trend_cell series={r.d2} stroke="#64748b" kind={:rate} baseline />
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :series, :list, required: true
+  attr :stroke, :string, required: true
+  attr :kind, :atom, required: true
+  attr :baseline, :boolean, default: false
+
+  defp trend_cell(assigns) do
+    latest = Sparkline.latest(assigns.series)
+
+    text =
+      case assigns.kind do
+        :value -> Sparkline.fmt_value(latest)
+        :rate -> Sparkline.fmt_rate(latest)
+      end
+
+    assigns = assign(assigns, :text, text)
+
+    ~H"""
+    <div class="flex items-center gap-1">
+      <Sparkline.sparkline series={@series} stroke={@stroke} baseline={@baseline} />
+      <span class="text-[9px] font-mono text-slate-400 tabular-nums w-11 text-right">
+        {@text}
+      </span>
     </div>
     """
   end
@@ -801,13 +942,15 @@ defmodule ConvoyWeb.SimLive do
 
   # Stable per-player colour from a fixed palette (Tailwind needs literal class
   # names, so we map a hash onto whole strings rather than interpolate).
+  # `stroke` is the hex twin of the `-400` dot tone, for inline-SVG sparklines
+  # (SVG can't take Tailwind classes).
   @palette [
-    %{dot: "bg-emerald-400", text: "text-emerald-300", cell: "bg-emerald-600"},
-    %{dot: "bg-sky-400", text: "text-sky-300", cell: "bg-sky-600"},
-    %{dot: "bg-fuchsia-400", text: "text-fuchsia-300", cell: "bg-fuchsia-600"},
-    %{dot: "bg-amber-400", text: "text-amber-300", cell: "bg-amber-600"},
-    %{dot: "bg-rose-400", text: "text-rose-300", cell: "bg-rose-600"},
-    %{dot: "bg-cyan-400", text: "text-cyan-300", cell: "bg-cyan-600"}
+    %{dot: "bg-emerald-400", text: "text-emerald-300", cell: "bg-emerald-600", stroke: "#34d399"},
+    %{dot: "bg-sky-400", text: "text-sky-300", cell: "bg-sky-600", stroke: "#38bdf8"},
+    %{dot: "bg-fuchsia-400", text: "text-fuchsia-300", cell: "bg-fuchsia-600", stroke: "#e879f9"},
+    %{dot: "bg-amber-400", text: "text-amber-300", cell: "bg-amber-600", stroke: "#fbbf24"},
+    %{dot: "bg-rose-400", text: "text-rose-300", cell: "bg-rose-600", stroke: "#fb7185"},
+    %{dot: "bg-cyan-400", text: "text-cyan-300", cell: "bg-cyan-600", stroke: "#22d3ee"}
   ]
 
   defp player_color(player_id) do

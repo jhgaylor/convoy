@@ -50,10 +50,19 @@ defmodule Convoy.Engine.Region do
   # (process killed, state in the snapshot) is the existing admin Stop.
   @warm_factor 8
 
+  # How many per-tick telemetry samples to retain for the trends sparklines.
+  # ~180 ticks ≈ 72s of history at the 1x hot rate — enough for a readable
+  # sparkline without the broadcast payload growing unbounded.
+  @history_len 180
+
   defmodule State do
     @moduledoc false
     # players: %{player_id => player()} where player is the map built by player/4.
     # observers: MapSet of monitor refs for connected spectators (drives hot/warm).
+    # history: a capped, newest-first ring buffer of per-player stat samples —
+    #   pure telemetry for the spectator trends panel, deliberately kept OUT of
+    #   `world` so the deterministic sim/replay core never sees it (CLAUDE.md:
+    #   determinism is sacred). Not snapshotted; it rebuilds as the sim runs.
     defstruct [
       :id,
       :world,
@@ -63,7 +72,8 @@ defmodule Convoy.Engine.Region do
       :timer,
       :last_fuel,
       :persist,
-      :observers
+      :observers,
+      :history
     ]
   end
 
@@ -309,7 +319,7 @@ defmodule Convoy.Engine.Region do
     state = cancel_timer(state)
     # Fresh world, but keep the players and re-add their harvesters.
     world = rebuild_world(seed, state)
-    state = %{state | world: world, status: :paused, last_fuel: 0}
+    state = %{state | world: world, status: :paused, last_fuel: 0, history: []}
     Convoy.EventLog.append(state.id, 0, :reset, %{seed: seed})
     persist_now(state)
     broadcast(state)
@@ -436,7 +446,34 @@ defmodule Convoy.Engine.Region do
     # no neighbor, so single-region play does no extra work.
     {departing, credits, world} = World.take_outbox(world)
     dispatch_outbox(departing, credits)
-    %{state | world: world, last_fuel: fuel}
+    %{state | world: world, last_fuel: fuel} |> sample_history()
+  end
+
+  # Snapshot each player's score-relevant stats for this tick into the (newest
+  # first) telemetry ring buffer. Fleet size is counted from live entities; the
+  # rest come straight off each base. Derived data only — never read by `Sim`.
+  defp sample_history(state) do
+    world = state.world
+
+    fleet =
+      Enum.reduce(world.entities, %{}, fn e, acc ->
+        Map.update(acc, e.owner, 1, &(&1 + 1))
+      end)
+
+    players =
+      Map.new(world.bases, fn {pid, b} ->
+        {pid,
+         %{
+           credits: b.credits,
+           refined: b.refined_total,
+           goods: b.goods,
+           ore: b.ore,
+           fleet: Map.get(fleet, pid, 0)
+         }}
+      end)
+
+    sample = %{tick: world.tick, players: players}
+    %{state | history: Enum.take([sample | state.history], @history_len)}
   end
 
   # Phase 2 of the handoff and the credit-back. Both are asynchronous casts —
@@ -514,7 +551,8 @@ defmodule Convoy.Engine.Region do
       timer: nil,
       last_fuel: 0,
       persist: persist,
-      observers: MapSet.new()
+      observers: MapSet.new(),
+      history: []
     }
   end
 
@@ -650,7 +688,9 @@ defmodule Convoy.Engine.Region do
       config: World.config(state.world),
       scores: World.scoreboard(state.world),
       bases: state.world.bases,
-      players: player_summaries(state)
+      players: player_summaries(state),
+      # Oldest → newest, so the spectator can render sparklines directly.
+      history: Enum.reverse(state.history)
     }
   end
 
