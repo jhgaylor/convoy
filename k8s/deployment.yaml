@@ -61,9 +61,10 @@ spec:
               value: convoy.inevitable.fyi
             - name: PORT
               value: "4000"
-            # Snapshots land under the mounted volume so they survive deploys.
+            # Colony snapshots land under the mounted volume so colonies survive
+            # deploys. A fresh subdir (the old /data/regions held v1 snapshots).
             - name: CONVOY_DATA_DIR
-              value: /data/regions
+              value: /data/colony
             # Delegate untrusted source compilation to the sandboxed builder
             # service (rust/tinygo/assemblyscript) instead of running toolchains
             # in this pod. WAT + Rules DSL are still handled in-process.
