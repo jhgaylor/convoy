@@ -93,11 +93,15 @@ defmodule Convoy.Engine do
     end
   end
 
-  @doc "Stop a simulation and delete its persisted snapshot."
+  @doc "Stop a simulation and delete its persisted snapshot + event log."
   def delete_region(id) do
     stop_region(id)
     Persistence.delete(id)
+    Convoy.EventLog.delete(id)
   end
+
+  @doc "A region's durable control-event history (primer §8), most-recent `n`."
+  def history(id, n \\ 50), do: Convoy.EventLog.tail(id, n)
 
   defdelegate snapshot(id), to: Region
   defdelegate load_program(id, backend, exec, display), to: Region

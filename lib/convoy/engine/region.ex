@@ -127,6 +127,12 @@ defmodule Convoy.Engine.Region do
     case build_player(player_id, backend, exec, display) do
       {:ok, player} ->
         state = put_player(state, player_id, player)
+
+        Convoy.EventLog.append(state.id, state.world.tick, :submit, %{
+          player: player_id,
+          backend: backend
+        })
+
         persist_now(state)
         broadcast(state)
         {:reply, :ok, state}
@@ -147,6 +153,7 @@ defmodule Convoy.Engine.Region do
       {player, players} ->
         Wasm.stop(player.wasm)
         state = %{state | players: players, world: World.remove_player(state.world, player_id)}
+        Convoy.EventLog.append(state.id, state.world.tick, :kick, %{player: player_id})
         persist_now(state)
         broadcast(state)
         {:reply, :ok, state}
@@ -181,6 +188,7 @@ defmodule Convoy.Engine.Region do
     # Fresh world, but keep the players and re-add their harvesters.
     world = rebuild_world(seed, state)
     state = %{state | world: world, status: :paused, last_fuel: 0}
+    Convoy.EventLog.append(state.id, 0, :reset, %{seed: seed})
     persist_now(state)
     broadcast(state)
     {:noreply, state}

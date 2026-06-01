@@ -110,6 +110,7 @@ the doc explains why; use AssemblyScript for a scripting feel).
 | **Region = single-writer process** (§4, §9) advancing autonomously | `Convoy.Engine.Region` GenServer; ticks on a timer, owns the WASM instance |
 | **Region registry / scale-to-zero** (§10): regions started on demand, located by id | `Registry` + `DynamicSupervisor` in `application.ex`; `Convoy.Engine.ensure_region/2` |
 | **Snapshot persistence / freeze-thaw** (§8, §11): a region resumes at the tick it stopped across a restart/deploy | `Convoy.Persistence` (file-backed snapshots) + `Region` restore-on-init + `Engine.restore_all/0` on boot |
+| **Event log** (§8): the durable event stream beside the snapshots | `Convoy.EventLog` — append-only, framed control events (submit/kick/reset) per region with their tick; combined with the seed + deterministic loop this is the recovery + free-replay substrate (§6, §8). `Engine.history/2` reads it |
 | **Local dev loop**: edit a file, watch in the sim | `mix convoy.run` + `POST /api/region/:id/program` (or `/upload`) + named regions (`/?region=NAME`) |
 | **Ops/overview**: every running sim + utilization, stop/delete/kick | `ConvoyWeb.AdminLive` (`/admin`) + `Engine.list_regions/0`, `region_stats/1`, `stop_region/1`, `delete_region/1`, `kick_player/2` |
 | **Route a session to its region** (§9) | `ConvoyWeb.SimLive` (spectator) subscribes over PubSub; submits go through `Convoy.Loader` → `Engine.submit_player/5` |
