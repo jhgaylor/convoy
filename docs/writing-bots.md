@@ -6,6 +6,12 @@ view of that harvester's situation, and you return a single **intent code**. The
 sim resolves intents authoritatively — you can't move a harvester or take ore
 directly, you can only *decide*.
 
+You harvest in your **own private room**: your harvesters, your base, and your
+ore deposits, with no other player allowed in — so `on_resource`, `res_dx/dy`,
+and the rest of the view always describe *your* room alone. Everyone shares one
+thing: the **market**, the room your convoys run to (see [Convoys & the
+contested market](#convoys--the-contested-market)).
+
 Two hard rules make any language work (or not):
 
 1. The module must export `decide` with the exact signature below.
@@ -86,8 +92,8 @@ Goods aren't only for upgrades — you can **ship them to market** for credits,
 the headline score. When `can_launch` is 1 (you have enough goods for a
 shipment), returning `30` at base loads a **convoy** and sends it off.
 
-A convoy is auto-piloted: it crosses the map to the market on its own, and on
-arrival its shipment sells for credits (a premium over the goods you spent — the
+A convoy is auto-piloted: it leaves your base, enters the shared market room,
+crosses it to the market on its own, and on arrival its shipment sells for credits (a premium over the goods you spent — the
 reward for making the run). You don't steer it; the strategy is **when** to ship
 versus hoard or upgrade.
 

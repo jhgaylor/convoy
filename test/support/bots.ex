@@ -22,23 +22,24 @@ defmodule Convoy.Bots do
   def harvester(entity, world) do
     pos = {entity.x, entity.y}
     owner = Map.get(entity, :owner)
+    room = Map.get(entity, :room, owner)
 
     cond do
       pos == world.base and entity.cargo > 0 -> :unload
-      pos == world.base -> at_base(world, owner, pos)
+      pos == world.base -> at_base(world, owner, room, pos)
       entity.cargo >= entity.cargo_max -> {:move, World.step_toward(pos, world.base)}
-      World.resource_at(world, pos) > 0 -> :harvest
-      true -> seek(pos, World.nearest_resource(world, pos), world.base)
+      World.resource_at(world, room, pos) > 0 -> :harvest
+      true -> seek(pos, World.nearest_resource(world, room, pos), world.base)
     end
   end
 
-  defp at_base(world, owner, pos) do
+  defp at_base(world, owner, room, pos) do
     cond do
       World.can_launch?(world, owner) -> :launch
       World.can_build?(world, owner, :refine) -> {:build, :refine}
       World.can_build?(world, owner, :cargo) -> {:build, :cargo}
       World.can_build?(world, owner, :fuel) -> {:build, :fuel}
-      true -> seek(pos, World.nearest_resource(world, pos), world.base)
+      true -> seek(pos, World.nearest_resource(world, room, pos), world.base)
     end
   end
 
@@ -48,8 +49,9 @@ defmodule Convoy.Bots do
   @doc "Always heads to the nearest ore and never returns (leaves the base cell)."
   def seeker(entity, world) do
     pos = {entity.x, entity.y}
+    room = Map.get(entity, :room, Map.get(entity, :owner))
 
-    case World.nearest_resource(world, pos) do
+    case World.nearest_resource(world, room, pos) do
       nil -> :idle
       target -> {:move, World.step_toward(pos, target)}
     end

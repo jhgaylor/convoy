@@ -18,15 +18,25 @@ defmodule Convoy.Engine.World do
   @type player_id :: String.t()
 
   @typedoc """
+  Which room an entity occupies. A `:harvester` lives in its owner's **private
+  harvesting room** (keyed by the owner's player id) — no other player can ever
+  be there. A `:convoy` lives in the single **shared market room** (`:market`),
+  the only contested ground in the world.
+  """
+  @type room :: player_id() | :market
+
+  @typedoc """
   A grid entity. `kind` is `:harvester` (player-controlled, mines/forges) or
   `:convoy` (auto-piloted shipment that runs to the market — see the Convoy
   section). A convoy's `cargo` is the goods it carries; `cargo_max` is unused
-  for it.
+  for it. `room` is which space the entity is in (see `room/0`): two entities
+  in different rooms never interact even at the same `{x, y}`.
   """
   @type entity :: %{
           id: pos_integer(),
           owner: player_id(),
           kind: :harvester | :convoy,
+          room: room(),
           x: non_neg_integer(),
           y: non_neg_integer(),
           cargo: non_neg_integer(),
@@ -56,14 +66,24 @@ defmodule Convoy.Engine.World do
             width: 16,
             height: 12,
             tick: 0,
+            # `base` is a room-LOCAL coordinate: the base cell within *every*
+            # harvesting room (all rooms share dimensions; only their ore layout
+            # differs). `market`/`market_entry` are coordinates in the shared
+            # market room — where convoys sell and where they appear.
             base: {0, 0},
             market: {15, 11},
+            market_entry: {0, 0},
             # Optional neighbor region id (primer §4). When set, convoys reaching
             # the market *cross the border* into that region instead of selling
             # here. nil = a self-contained, fully-deterministic region (the
             # default): convoys sell in-world.
             neighbor: nil,
-            resources: %{},
+            # Per-player **private harvesting rooms**: `%{player_id => %{resources:
+            # %{pos => amount}}}`. Each player's deposits live only in their own
+            # room, generated deterministically from `{seed, player_id}`, so no
+            # one competes for (or even sees the same) ore. The shared market room
+            # holds no resources — it's just the contested road to `market`.
+            rooms: %{},
             entities: [],
             bases: %{},
             next_entity_id: 1,
@@ -83,8 +103,9 @@ defmodule Convoy.Engine.World do
           tick: non_neg_integer(),
           base: pos(),
           market: pos(),
+          market_entry: pos(),
           neighbor: String.t() | nil,
-          resources: %{pos() => non_neg_integer()},
+          rooms: %{player_id() => %{resources: %{pos() => non_neg_integer()}}},
           entities: [entity()],
           bases: %{player_id() => base()},
           next_entity_id: pos_integer(),
@@ -143,15 +164,14 @@ defmodule Convoy.Engine.World do
     height = Keyword.get(opts, :height, 12)
     base = {0, 0}
     neighbor = Keyword.get(opts, :neighbor)
-    # The market sits at the opposite corner from base — the far end of the
-    # contested run. Deterministic, so replays and layouts stay reproducible.
+    # The market sits at the opposite corner from the market-room entry — the far
+    # end of the contested run. Deterministic, so replays/layouts stay reproducible.
     market = {width - 1, height - 1}
 
-    {resources, _rng} = place_resources(seed, width, height, base)
-
-    # A fresh world has NO players — they join explicitly via add_player/3
-    # (a CLI/API submission, or the in-browser editor's Run). The browser is a
-    # spectator until then.
+    # A fresh world has NO players and so NO rooms — players join explicitly via
+    # add_player/3 (a CLI/API submission, or the in-browser editor's Run), and
+    # each join carves out that player's private harvesting room. The browser is
+    # a spectator until then.
     %World{
       region_id: region_id,
       seed: seed,
@@ -160,8 +180,9 @@ defmodule Convoy.Engine.World do
       tick: 0,
       base: base,
       market: market,
+      market_entry: {0, 0},
       neighbor: neighbor,
-      resources: resources,
+      rooms: %{},
       entities: [],
       bases: %{},
       next_entity_id: 1,
@@ -178,9 +199,10 @@ defmodule Convoy.Engine.World do
   def harvesters_per_player, do: @harvesters
 
   @doc """
-  Add a player to the world: spawn their harvesters at base and start their
-  score at 0. Idempotent — re-adding an existing player is a no-op (so a player
-  resubmitting code keeps their entities).
+  Add a player to the world: carve out their **private harvesting room**
+  (deterministic deposits from `{seed, player_id}`), spawn their harvesters at
+  the base cell inside it, and start their score at 0. Idempotent — re-adding an
+  existing player is a no-op (so a player resubmitting code keeps their room).
   """
   @spec add_player(t(), player_id(), pos_integer()) :: t()
   def add_player(world, player_id, count \\ @harvesters)
@@ -198,6 +220,7 @@ defmodule Convoy.Engine.World do
           id: id,
           owner: player_id,
           kind: :harvester,
+          room: player_id,
           x: bx,
           y: by,
           cargo: 0,
@@ -208,14 +231,25 @@ defmodule Convoy.Engine.World do
         {entity, id + 1}
       end)
 
+    # Each player's deposits derive from a per-player seed, so every room is
+    # reproducible (replay, primer §6) and distinct (no two players get the
+    # same map — but also can never touch each other's ore).
+    {resources, _rng} =
+      place_resources(room_seed(world.seed, player_id), world.width, world.height, world.base)
+
     %{
       world
       | entities: world.entities ++ new_entities,
+        rooms: Map.put(world.rooms, player_id, %{resources: resources}),
         bases: Map.put(world.bases, player_id, new_base()),
         next_entity_id: next_id,
         events: ["Player #{player_id} joined with #{count} harvesters." | world.events]
     }
   end
+
+  # A per-player room seed: deterministic from the world seed + player id, so a
+  # given player always gets the same private layout under a given world seed.
+  defp room_seed(seed, player_id), do: :erlang.phash2({seed, player_id})
 
   # A freshly-joined player's base: empty stockpile, no goods/credits, tech L0.
   defp new_base,
@@ -232,6 +266,7 @@ defmodule Convoy.Engine.World do
         world
         | entities: Enum.reject(world.entities, &(&1.owner == player_id)),
           bases: Map.delete(world.bases, player_id),
+          rooms: Map.delete(world.rooms, player_id),
           events: ["Player #{player_id} was kicked." | world.events]
       }
     else
@@ -403,14 +438,18 @@ defmodule Convoy.Engine.World do
   """
   @spec launch_convoy(t(), player_id()) :: t()
   def launch_convoy(%World{} = world, player_id) do
-    {bx, by} = world.base
+    # The convoy leaves the player's base and enters the SHARED market room at
+    # its entry — the contested run happens on common ground, never inside a
+    # player's private room.
+    {ex, ey} = world.market_entry
 
     convoy = %{
       id: world.next_entity_id,
       owner: player_id,
       kind: :convoy,
-      x: bx,
-      y: by,
+      room: :market,
+      x: ex,
+      y: ey,
       cargo: @shipment_value,
       cargo_max: @shipment_value,
       # The region to credit when this shipment finally sells — its home, even
@@ -467,14 +506,15 @@ defmodule Convoy.Engine.World do
   """
   @spec receive_convoy(t(), map()) :: t()
   def receive_convoy(%World{} = world, %{owner: owner, cargo: cargo, origin_region: origin}) do
-    {bx, by} = world.base
+    {ex, ey} = world.market_entry
 
     convoy = %{
       id: world.next_entity_id,
       owner: owner,
       kind: :convoy,
-      x: bx,
-      y: by,
+      room: :market,
+      x: ex,
+      y: ey,
       cargo: cargo,
       cargo_max: cargo,
       origin_region: origin,
@@ -500,28 +540,47 @@ defmodule Convoy.Engine.World do
   @spec resource_amount() :: pos_integer()
   def resource_amount, do: @resource_amount
 
-  @doc "How many distinct deposits still hold ore."
+  @doc "Ids of the players whose private harvesting rooms exist."
+  @spec room_ids(t()) :: [player_id()]
+  def room_ids(%World{rooms: rooms}), do: Map.keys(rooms)
+
+  @doc "The deposit map for a player's room (empty if the room is unknown)."
+  @spec resources(t(), room()) :: %{pos() => non_neg_integer()}
+  def resources(%World{rooms: rooms}, room) do
+    case Map.get(rooms, room) do
+      %{resources: r} -> r
+      _ -> %{}
+    end
+  end
+
+  @doc "How many distinct deposits still hold ore in a room."
+  @spec resource_node_count(t(), room()) :: non_neg_integer()
+  def resource_node_count(%World{} = world, room), do: map_size(resources(world, room))
+
+  @doc "How many distinct deposits still hold ore across every room."
   @spec resource_node_count(t()) :: non_neg_integer()
-  def resource_node_count(%World{resources: r}), do: map_size(r)
+  def resource_node_count(%World{rooms: rooms} = world),
+    do: rooms |> Map.keys() |> Enum.map(&resource_node_count(world, &1)) |> Enum.sum()
 
   @doc """
-  If the map has dwindled to its last deposit (or fewer), add a fresh one at a
+  If a room has dwindled to its last deposit (or fewer), add a fresh one at a
   deterministic free cell and return `{world, spawned_pos}`. Otherwise return
-  `{world, nil}` unchanged.
+  `{world, nil}` unchanged. No-op for a room that doesn't exist (e.g. `:market`,
+  which holds no ore).
 
-  Placement derives from `{seed, tick}` so replays stay bit-identical (§6) — no
-  wall-clock, no `:rand`. The sim calls this each tick after resolving intents.
+  Placement derives from `{seed, tick, room}` so replays stay bit-identical
+  (§6) — no wall-clock, no `:rand`. The sim calls this each tick per room after
+  resolving intents.
   """
-  @spec maybe_spawn_resource(t()) :: {t(), pos() | nil}
-  def maybe_spawn_resource(%World{} = world) do
-    if map_size(world.resources) <= @replenish_threshold do
-      pos = spawn_cell(world)
+  @spec maybe_spawn_resource(t(), room()) :: {t(), pos() | nil}
+  def maybe_spawn_resource(%World{rooms: rooms} = world, room) when is_map_key(rooms, room) do
+    if map_size(resources(world, room)) <= @replenish_threshold do
+      pos = spawn_cell(world, room)
 
-      world = %{
+      world =
         world
-        | resources: Map.put(world.resources, pos, @resource_amount),
-          replenished: world.replenished + 1
-      }
+        |> put_resources(room, Map.put(resources(world, room), pos, @resource_amount))
+        |> Map.update!(:replenished, &(&1 + 1))
 
       {world, pos}
     else
@@ -529,24 +588,56 @@ defmodule Convoy.Engine.World do
     end
   end
 
-  @doc "Total ore still sitting in the ground."
+  def maybe_spawn_resource(%World{} = world, _room), do: {world, nil}
+
+  @doc "Total ore still sitting in the ground in a room."
+  @spec ore_remaining(t(), room()) :: non_neg_integer()
+  def ore_remaining(%World{} = world, room),
+    do: world |> resources(room) |> Map.values() |> Enum.sum()
+
+  @doc "Total ore still in the ground across every room (the headline number)."
   @spec ore_remaining(t()) :: non_neg_integer()
-  def ore_remaining(%World{resources: r}), do: r |> Map.values() |> Enum.sum()
+  def ore_remaining(%World{rooms: rooms} = world),
+    do: rooms |> Map.keys() |> Enum.map(&ore_remaining(world, &1)) |> Enum.sum()
 
-  @doc "Resource amount at a cell (0 if none)."
-  @spec resource_at(t(), pos()) :: non_neg_integer()
-  def resource_at(%World{resources: r}, pos), do: Map.get(r, pos, 0)
+  @doc "Resource amount at a cell in a room (0 if none)."
+  @spec resource_at(t(), room(), pos()) :: non_neg_integer()
+  def resource_at(%World{} = world, room, pos), do: Map.get(resources(world, room), pos, 0)
 
-  @doc "Nearest cell still holding ore, by Manhattan distance (deterministic tie-break)."
-  @spec nearest_resource(t(), pos()) :: pos() | nil
-  def nearest_resource(%World{} = world, pos), do: pick_resource(world, pos, &Enum.min_by/3)
+  @doc "Nearest cell in a room still holding ore, by Manhattan distance (deterministic tie-break)."
+  @spec nearest_resource(t(), room(), pos()) :: pos() | nil
+  def nearest_resource(%World{} = world, room, pos),
+    do: pick_resource(resources(world, room), pos, &Enum.min_by/3)
 
-  @doc "Farthest cell still holding ore, by Manhattan distance (deterministic tie-break)."
-  @spec farthest_resource(t(), pos()) :: pos() | nil
-  def farthest_resource(%World{} = world, pos), do: pick_resource(world, pos, &Enum.max_by/3)
+  @doc "Farthest cell in a room still holding ore, by Manhattan distance (deterministic tie-break)."
+  @spec farthest_resource(t(), room(), pos()) :: pos() | nil
+  def farthest_resource(%World{} = world, room, pos),
+    do: pick_resource(resources(world, room), pos, &Enum.max_by/3)
 
-  defp pick_resource(%World{resources: r}, {x, y}, chooser) do
-    r
+  @doc """
+  Remove `amount` ore from a cell in a room, dropping the deposit when it
+  empties. The sim's authoritative harvest resolution goes through here.
+  """
+  @spec deplete_resource(t(), room(), pos(), non_neg_integer()) :: t()
+  def deplete_resource(%World{} = world, room, pos, amount) do
+    updated =
+      world
+      |> resources(room)
+      |> Map.update(pos, 0, &(&1 - amount))
+      |> then(fn r -> if Map.get(r, pos, 0) <= 0, do: Map.delete(r, pos), else: r end)
+
+    put_resources(world, room, updated)
+  end
+
+  defp put_resources(%World{rooms: rooms} = world, room, resources) do
+    %{
+      world
+      | rooms: Map.update(rooms, room, %{resources: resources}, &%{&1 | resources: resources})
+    }
+  end
+
+  defp pick_resource(resources, {x, y}, chooser) do
+    resources
     |> Enum.filter(fn {_pos, amt} -> amt > 0 end)
     |> Enum.map(fn {pos, _amt} -> pos end)
     |> Enum.sort()
@@ -585,20 +676,20 @@ defmodule Convoy.Engine.World do
 
   # --- deterministic spawn placement ---
 
-  # Pick a free cell (not the base, not an existing deposit) deterministically
-  # from {seed, tick}, probing forward until one is free.
-  defp spawn_cell(%World{} = world) do
-    base_hash = :erlang.phash2({world.seed, world.tick})
-    find_free_cell(world, base_hash, 0)
+  # Pick a free cell in `room` (not the base, not an existing deposit)
+  # deterministically from {seed, tick, room}, probing forward until one's free.
+  defp spawn_cell(%World{} = world, room) do
+    base_hash = :erlang.phash2({world.seed, world.tick, room})
+    find_free_cell(world, room, base_hash, 0)
   end
 
-  defp find_free_cell(%World{width: w, height: h, base: base} = world, base_hash, attempt)
+  defp find_free_cell(%World{width: w, height: h, base: base} = world, room, base_hash, attempt)
        when attempt < w * h do
     n = :erlang.phash2({base_hash, attempt})
     pos = {rem(n, w), rem(div(n, w), h)}
 
-    if pos == base or Map.has_key?(world.resources, pos) do
-      find_free_cell(world, base_hash, attempt + 1)
+    if pos == base or Map.has_key?(resources(world, room), pos) do
+      find_free_cell(world, room, base_hash, attempt + 1)
     else
       pos
     end
@@ -606,7 +697,7 @@ defmodule Convoy.Engine.World do
 
   # Grid is entirely full of deposits — can't happen below the threshold, but
   # fall back to the base cell rather than loop forever.
-  defp find_free_cell(%World{base: base}, _base_hash, _attempt), do: base
+  defp find_free_cell(%World{base: base}, _room, _base_hash, _attempt), do: base
 
   # --- deterministic generation helpers ---
 

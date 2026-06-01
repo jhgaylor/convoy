@@ -46,23 +46,27 @@ mix convoy.run examples/harvester.rs --watch
 Open `http://localhost:4000/?region=dev` and just watch. Each save recompiles
 and reloads the running region. Edit `examples/harvester.rs`, save, see it change.
 
-### Multiplayer (a shared world)
+### Multiplayer (private rooms, one shared market)
 
 Submit different players into the **same region** and they run as independent
-players in one common world — each owns their own harvesters, runs their own
-code, and scores separately. Two terminals, two strategies, one arena:
+players in one common world. Each player **harvests in their own private room**
+— their own deterministic ore layout, their own base, no one else allowed in —
+so there's no fighting over ore. The contest is the **market**: a single shared
+room every player's convoys must cross to sell. Two terminals, two strategies,
+one arena:
 
 ```bash
 mix convoy.run examples/harvester.ts --region arena --player alice
 mix convoy.run examples/harvester.rs    --region arena --player bob
 ```
 
-Open `http://localhost:4000/?region=arena` to watch the scoreboard and the
-colour-coded harvesters compete for ore. The shared world arbitrates conflicts
-authoritatively (resolved in entity-id order, single-writer), so two players
-reaching for the last ore in a cell is decided fairly and deterministically.
-The browser is a **spectator** — it never auto-joins. You join by submitting a
-bot: the page's upload, `mix convoy.run --player NAME`, or a `curl` to `/upload`.
+Open `http://localhost:4000/?region=arena` to watch the scoreboard, each
+player's private harvesting room, and the shared market room where convoys
+collide. When two players' convoys share a market cell the world arbitrates
+authoritatively (resolved in entity-id order, single-writer), so an ambush for a
+shipment is decided fairly and deterministically. The browser is a
+**spectator** — it never auto-joins. You join by submitting a bot: the page's
+upload, `mix convoy.run --player NAME`, or a `curl` to `/upload`.
 
 Prefer the terminal? `--headless` runs the sim in-process and renders ASCII —
 no server, no browser, the fastest loop:
@@ -106,7 +110,8 @@ the doc explains why; use AssemblyScript for a scripting feel).
 | **Intents, never mutations** (§3): player code returns declarative intents; the sim owns all state change | the WASM `decide` returns an intent code; `Sim` resolves them authoritatively |
 | **WASM execution tier + fuel metering** (§7): untrusted code in Wasmtime, instruction-counted budget, zero ambient authority | `Convoy.Engine.Wasm` via `wasmex`; per-entity fuel budget, traps contained |
 | **Player language story** (§7): bring Rust/Go/AssemblyScript/C, or an easy SDK | `Convoy.Compile` (in-game single-file compile) + `.wasm` upload; templates per language |
-| **Seeded determinism / free replays** (§6, §11): same seed + same program → bit-identical result | `World.generate/1` (LCG), `:erlang.phash2` for `wander`; proven in tests |
+| **Seeded determinism / free replays** (§6, §11): same seed + same program → bit-identical result | `World.generate/1` (LCG); each player's private room laid out from `phash2({seed, player_id})`; `:erlang.phash2` for `wander`; proven in tests |
+| **Private harvesting rooms + a shared market**: each player mines alone, everyone ships to one contested market | `World.rooms` (per-player deposits, keyed by player id) + the `:market` room; entities carry a `room` tag; `Sim`/`Wasm` scope harvest + the per-entity view to the owner's room. The market is the only place entities from different players meet |
 | **Region = single-writer process** (§4, §9) advancing autonomously | `Convoy.Engine.Region` GenServer; ticks on a timer, owns the WASM instance |
 | **Region registry / scale-to-zero** (§10): regions started on demand, located by id | `Registry` + `DynamicSupervisor` in `application.ex`; `Convoy.Engine.ensure_region/2` |
 | **Hot/warm activation** (§5): spend compute where something's happening | a running region with no spectators is **warm** — it still advances but ticks `@warm_factor`× slower; a connecting spectator (`Engine.observe/2`, called by `SimLive`) snaps it **hot** (full rate). **Cold** = the admin Stop (process killed, snapshot kept). `activation` shows in the header + stats |
@@ -229,14 +234,24 @@ layer, and it's done.
 
 ## Multiplayer model
 
-A region is a shared world with many players. Each player submits their own
-program and owns a set of harvesters; the tick loop runs each entity's *owner's*
-program, then resolves all intents in entity-id order (single-writer), so
-competition for ore is arbitrated fairly and deterministically. Scoring is
-per-player (`World.scores`). The browser only spectates until you submit; you
-join as a named player via the page's upload, `mix convoy.run --player NAME`,
-or the HTTP API. Players, their programs, and scores are all part of the
-persisted snapshot, so a shared game survives deploys.
+A region is a shared world with many players, but **space is partitioned into
+rooms** (`World.rooms`). Each player gets a **private harvesting room** — its ore
+laid out deterministically from `{seed, player_id}`, its base, and only that
+player's harvesters; no other player's entity can ever be there. There's a
+single **shared market room** (`:market`) that every player's convoys travel
+through to sell. Each entity carries a `room` tag (`owner_id` for harvesters,
+`:market` for convoys), and two entities in different rooms never interact even
+at the same `{x, y}`.
+
+The upshot: harvesting is solitaire (no ore contention), and the **only**
+contested ground is the market road, where convoys from different players can
+collide and the lower-id one seizes the shipment (resolved in entity-id order,
+single-writer — fair and deterministic). The tick loop runs each harvester's
+*owner's* program against a read-only view of that player's own room. Scoring is
+per-player (`World.scoreboard`). The browser only spectates until you submit;
+you join as a named player via the page's upload, `mix convoy.run --player
+NAME`, or the HTTP API. Players, their rooms, programs, and scores are all part
+of the persisted snapshot, so a shared game survives deploys.
 
 ## Not yet built (next milestones, per the primer)
 

@@ -82,16 +82,22 @@ defmodule Convoy.Engine.Sim do
     |> Map.update!(:events, &Enum.take(&1, @max_events))
   end
 
-  # Keep the region from being mined to a dead end: spawn a fresh deposit when
-  # it drops to its last one (deterministic — see World.maybe_spawn_resource/1).
+  # Keep each player's room from being mined to a dead end: spawn a fresh deposit
+  # in any room that drops to its last one (deterministic, per room — see
+  # World.maybe_spawn_resource/2). Each room replenishes independently.
   defp replenish(world) do
-    case World.maybe_spawn_resource(world) do
-      {world, nil} ->
-        world
+    Enum.reduce(World.room_ids(world), world, fn room, acc ->
+      case World.maybe_spawn_resource(acc, room) do
+        {acc, nil} ->
+          acc
 
-      {world, pos} ->
-        note(world, "A new ore deposit (#{World.resource_amount()}) appeared at #{fmt(pos)}.")
-    end
+        {acc, pos} ->
+          note(
+            acc,
+            "A new ore deposit (#{World.resource_amount()}) appeared in #{room}'s room at #{fmt(pos)}."
+          )
+      end
+    end)
   end
 
   @doc "Run `n` ticks. Used for replay / fast-forward verification (primer §11)."
@@ -115,7 +121,9 @@ defmodule Convoy.Engine.Sim do
   defp resolve(world, id, :harvest) do
     e = entity(world, id)
     pos = {e.x, e.y}
-    available = World.resource_at(world, pos)
+    # A harvester only ever sees ore in its OWN private room (primer: players
+    # can't enter each other's spaces). `e.room` is the owner's room id.
+    available = World.resource_at(world, e.room, pos)
     space = e.cargo_max - e.cargo
 
     cond do
@@ -127,10 +135,9 @@ defmodule Convoy.Engine.Sim do
 
       true ->
         taken = min(available, space)
-        resources = Map.update!(world.resources, pos, &(&1 - taken)) |> drop_empty(pos)
 
         world
-        |> Map.put(:resources, resources)
+        |> World.deplete_resource(e.room, pos, taken)
         |> update_entity(id, &%{&1 | cargo: &1.cargo + taken, last_action: :harvest})
         |> note("#{e.owner}/H#{id} mined #{taken} ore at #{fmt(pos)}.")
     end
@@ -311,10 +318,6 @@ defmodule Convoy.Engine.Sim do
       end)
 
     %{world | entities: entities}
-  end
-
-  defp drop_empty(resources, pos) do
-    if Map.get(resources, pos, 0) <= 0, do: Map.delete(resources, pos), else: resources
   end
 
   defp clamp(v, _size) when v < 0, do: 0

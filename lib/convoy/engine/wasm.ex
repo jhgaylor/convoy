@@ -281,16 +281,19 @@ defmodule Convoy.Engine.Wasm do
   defp build_view(entity, world) do
     pos = {entity.x, entity.y}
     owner = Map.get(entity, :owner)
+    # A harvester only sees ore in its own private room (primer: no shared
+    # harvesting space). Fall back to the owner id for synthetic test entities.
+    room = Map.get(entity, :room, owner)
     {bdx, bdy} = World.step_toward(pos, world.base)
 
     {rdx, rdy} =
-      case World.nearest_resource(world, pos) do
+      case World.nearest_resource(world, room, pos) do
         nil -> {0, 0}
         target -> World.step_toward(pos, target)
       end
 
     at_base = bool(pos == world.base)
-    on_resource = bool(World.resource_at(world, pos) > 0)
+    on_resource = bool(World.resource_at(world, room, pos) > 0)
     base = World.base(world, owner)
 
     # The Forge economy: stockpile + spendable goods, plus precomputed
@@ -320,12 +323,12 @@ defmodule Convoy.Engine.Wasm do
   defp code_to_intent(2, _e, _w), do: :unload
   defp code_to_intent(3, e, w), do: {:move, World.step_toward({e.x, e.y}, w.base)}
 
-  defp code_to_intent(4, e, w), do: seek(e, w, World.nearest_resource(w, {e.x, e.y}))
+  defp code_to_intent(4, e, w), do: seek(e, w, World.nearest_resource(w, room(e), {e.x, e.y}))
   defp code_to_intent(5, e, w), do: {:move, World.wander_dir(w.seed, w.tick, e.id)}
   # Farthest is measured from the BASE, not the harvester — a fixed reference, so
   # the target stays put as the harvester approaches (no oscillation between two
   # nodes). Nearest (code 4) is harvester-relative and stable on its own.
-  defp code_to_intent(6, e, w), do: seek(e, w, World.farthest_resource(w, w.base))
+  defp code_to_intent(6, e, w), do: seek(e, w, World.farthest_resource(w, room(e), w.base))
   defp code_to_intent(10, _e, _w), do: {:move, {1, 0}}
   defp code_to_intent(11, _e, _w), do: {:move, {-1, 0}}
   defp code_to_intent(12, _e, _w), do: {:move, {0, 1}}
@@ -339,9 +342,13 @@ defmodule Convoy.Engine.Wasm do
   defp code_to_intent(30, _e, _w), do: :launch
   defp code_to_intent(_other, _e, _w), do: :idle
 
-  # Step toward a target resource (or home if the map is empty).
+  # Step toward a target resource (or home if the room is empty).
   defp seek(e, w, nil), do: {:move, World.step_toward({e.x, e.y}, w.base)}
   defp seek(e, _w, target), do: {:move, World.step_toward({e.x, e.y}, target)}
+
+  # The harvester's private room (its owner id); falls back to the owner for
+  # synthetic test entities that don't carry an explicit room.
+  defp room(e), do: Map.get(e, :room, Map.get(e, :owner))
 
   # --- helpers ---
 

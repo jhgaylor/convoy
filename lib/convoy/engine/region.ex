@@ -36,10 +36,11 @@ defmodule Convoy.Engine.Region do
 
   @default_tick_ms 400
   @snapshot_every 50
-  # Bumped to 5: world gained cross-region border-crossing fields (neighbor +
-  # departing/pending_credits outboxes, primer §4). v4 = player Memory in the
-  # snapshot; v3 = the Forge bases shape.
-  @snapshot_version 5
+  # Bumped to 6: per-player private harvesting rooms + a shared market room —
+  # the world dropped the single shared `resources` map for a `rooms` map and
+  # gained `market_entry`, and entities carry a `room`. v5 = cross-region
+  # border-crossing fields; v4 = player Memory; v3 = the Forge bases shape.
+  @snapshot_version 6
 
   # Scale-to-zero activation (primer §5). A running region with no spectators is
   # **warm**: it still advances (it's a persistent world) but ticks much more

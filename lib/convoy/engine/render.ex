@@ -4,26 +4,48 @@ defmodule Convoy.Engine.Render do
   LiveView grid, so `convoy.run --headless` can show a bot running without a
   browser.
 
-  Legend: `B` base · `M` market · `1..9` harvester (its id) · `C` convoy ·
-  `*` ore · `·` empty.
+  Each player harvests in their own **private room**; everyone's convoys share
+  one **market room**. We print one grid per player's room, then the market room.
+
+  Legend: `B` base · `M` market · `E` market entry · `1..9` harvester (its id) ·
+  `C` convoy · `*` ore · `·` empty.
   """
 
   alias Convoy.Engine.World
 
-  @doc "A full frame: the grid plus a stats line and recent events."
+  @doc "A full frame: every room's grid plus a stats line and recent events."
   @spec frame(World.t()) :: String.t()
   def frame(%World{} = world) do
-    [grid(world), "\n", stats(world), "\n", events(world)]
+    [rooms(world), "\n", stats(world), "\n", events(world)]
     |> IO.iodata_to_binary()
   end
 
-  @doc "Just the grid rows."
-  @spec grid(World.t()) :: String.t()
-  def grid(%World{} = world) do
+  # One labelled grid per player room, then the shared market room.
+  defp rooms(%World{} = world) do
+    player_rooms =
+      world
+      |> World.room_ids()
+      |> Enum.sort()
+      |> Enum.map(fn room -> ["room #{room}\n", room_grid(world, room), "\n"] end)
+
+    [player_rooms, "market\n", market_grid(world)]
+  end
+
+  @doc "A single harvesting room's grid rows (base, ore, that player's harvesters)."
+  @spec room_grid(World.t(), World.room()) :: String.t()
+  def room_grid(%World{} = world, room) do
+    render_grid(world, fn pos -> room_cell(world, room, pos) end)
+  end
+
+  @doc "The shared market room's grid rows (market sell-point, entry, convoys)."
+  @spec market_grid(World.t()) :: String.t()
+  def market_grid(%World{} = world) do
+    render_grid(world, fn pos -> market_cell(world, pos) end)
+  end
+
+  defp render_grid(%World{} = world, cell_fun) do
     for y <- 0..(world.height - 1) do
-      for x <- 0..(world.width - 1) do
-        cell(world, {x, y})
-      end
+      for x <- 0..(world.width - 1), do: cell_fun.({x, y})
     end
     |> Enum.map_join("\n", &Enum.join(&1, " "))
   end
@@ -56,18 +78,17 @@ defmodule Convoy.Engine.Render do
     |> Enum.map_join("\n", &("  · " <> &1))
   end
 
-  defp cell(world, pos) do
+  # A cell in one player's private harvesting room: their harvesters, the base,
+  # and that room's ore — nothing from any other player.
+  defp room_cell(world, room, pos) do
     cond do
-      entity = entity_at(world, pos) ->
-        if World.convoy?(entity), do: "C", else: Integer.to_string(rem(entity.id, 10))
+      e = entity_in(world, room, pos) ->
+        Integer.to_string(rem(e.id, 10))
 
       pos == world.base ->
         "B"
 
-      pos == World.market(world) ->
-        "M"
-
-      World.resource_at(world, pos) > 0 ->
+      World.resource_at(world, room, pos) > 0 ->
         "*"
 
       true ->
@@ -75,7 +96,17 @@ defmodule Convoy.Engine.Render do
     end
   end
 
-  defp entity_at(world, {x, y}) do
-    Enum.find(world.entities, &(&1.x == x and &1.y == y))
+  # A cell in the shared market room: the sell-point, the entry, and convoys.
+  defp market_cell(world, pos) do
+    cond do
+      entity_in(world, :market, pos) -> "C"
+      pos == World.market(world) -> "M"
+      pos == world.market_entry -> "E"
+      true -> "·"
+    end
+  end
+
+  defp entity_in(world, room, {x, y}) do
+    Enum.find(world.entities, &(&1.room == room and &1.x == x and &1.y == y))
   end
 end

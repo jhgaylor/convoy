@@ -6,30 +6,68 @@ defmodule Convoy.EngineTest do
   # The canonical harvester as a plain Elixir decider (no language involved).
   defp rules, do: &Convoy.Bots.harvester/2
 
-  # A world with one player's harvesters (generate now starts empty).
+  # A world with one player's harvesters + private room (generate now starts empty).
   defp solo(seed), do: World.generate(seed: seed) |> World.add_player("p1")
 
+  # Force a player's private room to a known ore layout.
+  defp with_room(world, player, resources) do
+    world = World.add_player(world, player)
+    %{world | rooms: Map.put(world.rooms, player, %{resources: resources})}
+  end
+
   test "same seed produces an identical world layout" do
-    a = World.generate(seed: 42)
-    b = World.generate(seed: 42)
-    assert a.resources == b.resources
+    a = World.generate(seed: 42) |> World.add_player("p1")
+    b = World.generate(seed: 42) |> World.add_player("p1")
+    assert a.rooms == b.rooms
     assert a.entities == b.entities
   end
 
   test "different seeds produce different layouts" do
-    refute World.generate(seed: 1).resources == World.generate(seed: 2).resources
+    a = World.generate(seed: 1) |> World.add_player("p1")
+    b = World.generate(seed: 2) |> World.add_player("p1")
+    refute a.rooms == b.rooms
   end
 
-  test "nearest/farthest_resource pick the closest/most-distant node" do
-    world = %{World.generate(seed: 1) | resources: %{{1, 0} => 5, {14, 8} => 5}}
-    assert World.nearest_resource(world, {0, 0}) == {1, 0}
-    assert World.farthest_resource(world, {0, 0}) == {14, 8}
+  test "each player gets a distinct private room under the same seed" do
+    world = World.generate(seed: 5) |> World.add_player("p1") |> World.add_player("p2")
+    # Same world seed, but different players → different (private) layouts.
+    refute World.resources(world, "p1") == World.resources(world, "p2")
+    # And a harvester is tagged with its owner's room.
+    assert Enum.all?(world.entities, &(&1.room == &1.owner))
   end
 
-  test "farthest_resource is deterministic and returns nil on an empty map" do
-    world = %{World.generate(seed: 1) | resources: %{{2, 2} => 1, {9, 9} => 1}}
-    assert World.farthest_resource(world, {0, 0}) == World.farthest_resource(world, {0, 0})
-    assert World.farthest_resource(%{world | resources: %{}}, {0, 0}) == nil
+  test "a harvester only mines ore in its own room, never another player's" do
+    world = World.generate(seed: 1) |> World.add_player("p1") |> World.add_player("p2")
+    # p1's room is empty; p2 has ore sitting on the (shared-coordinate) base cell.
+    world = %{world | rooms: %{"p1" => %{resources: %{}}, "p2" => %{resources: %{{0, 0} => 40}}}}
+
+    # Everyone tries to harvest. p1's harvesters stand on {0,0} too, but that's a
+    # cell in their OWN room, which has no ore — they can't touch p2's deposit.
+    final = Sim.run(world, fn _e, _w -> :harvest end, 1)
+
+    assert World.resource_at(final, "p1", {0, 0}) == 0
+    # p2 mined its own ore (3 harvesters × 5 cargo each = 15 removed).
+    assert World.resource_at(final, "p2", {0, 0}) == 25
+
+    p1_cargo =
+      final.entities |> Enum.filter(&(&1.owner == "p1")) |> Enum.map(& &1.cargo) |> Enum.sum()
+
+    assert p1_cargo == 0
+  end
+
+  test "nearest/farthest_resource pick the closest/most-distant node in a room" do
+    world = with_room(World.generate(seed: 1), "p1", %{{1, 0} => 5, {14, 8} => 5})
+    assert World.nearest_resource(world, "p1", {0, 0}) == {1, 0}
+    assert World.farthest_resource(world, "p1", {0, 0}) == {14, 8}
+  end
+
+  test "farthest_resource is deterministic and returns nil on an empty room" do
+    world = with_room(World.generate(seed: 1), "p1", %{{2, 2} => 1, {9, 9} => 1})
+
+    assert World.farthest_resource(world, "p1", {0, 0}) ==
+             World.farthest_resource(world, "p1", {0, 0})
+
+    assert World.farthest_resource(with_room(world, "p1", %{}), "p1", {0, 0}) == nil
   end
 
   # The primer §11 acceptance test, in miniature: running the same program
@@ -70,26 +108,26 @@ defmodule Convoy.EngineTest do
              World.ore_remaining(final) == total + spawned
   end
 
-  test "a dwindling map spawns a fresh deposit at its last node" do
-    world = %{World.generate(seed: 1) | resources: %{{5, 5} => 3}}
-    assert World.resource_node_count(world) == 1
+  test "a dwindling room spawns a fresh deposit at its last node" do
+    world = with_room(World.generate(seed: 1), "p1", %{{5, 5} => 3})
+    assert World.resource_node_count(world, "p1") == 1
 
-    {world, pos} = World.maybe_spawn_resource(world)
+    {world, pos} = World.maybe_spawn_resource(world, "p1")
     assert pos != nil
-    assert World.resource_node_count(world) == 2
-    assert World.resource_at(world, pos) == World.resource_amount()
+    assert World.resource_node_count(world, "p1") == 2
+    assert World.resource_at(world, "p1", pos) == World.resource_amount()
     assert world.replenished == 1
   end
 
-  test "no deposit spawns while several remain" do
-    world = World.generate(seed: 1)
-    assert {^world, nil} = World.maybe_spawn_resource(world)
+  test "no deposit spawns while several remain in a room" do
+    world = World.generate(seed: 1) |> World.add_player("p1")
+    assert {^world, nil} = World.maybe_spawn_resource(world, "p1")
   end
 
-  test "spawn placement is deterministic for the same seed + tick" do
-    world = %{World.generate(seed: 2) | resources: %{{3, 3} => 1}, tick: 17}
-    {_, a} = World.maybe_spawn_resource(world)
-    {_, b} = World.maybe_spawn_resource(world)
+  test "spawn placement is deterministic for the same seed + tick + room" do
+    world = %{with_room(World.generate(seed: 2), "p1", %{{3, 3} => 1}) | tick: 17}
+    {_, a} = World.maybe_spawn_resource(world, "p1")
+    {_, b} = World.maybe_spawn_resource(world, "p1")
     assert a == b
   end
 
@@ -226,8 +264,8 @@ defmodule Convoy.EngineTest do
       |> World.launch_convoy("p1")
       |> World.launch_convoy("p2")
 
-    # Both spawn at the shared base and step toward the market together, so they
-    # share a cell — the lower-id convoy ambushes the other.
+    # Both enter the shared market room at the same entry and step toward the
+    # market together, so they share a cell — the lower-id convoy ambushes.
     final = Sim.run(world, idle_harvesters(), 1)
 
     assert [survivor] = World.convoys(final)

@@ -295,7 +295,7 @@ defmodule ConvoyWeb.SimLive do
         <section class="space-y-4">
           <.controls status={@status} speeds={@speeds} tick_ms={@tick_ms} seed={@seed} />
           <.scoreboard bases={@bases} players={@players} my_player={@my_player} />
-          <.grid world={@world} />
+          <.rooms world={@world} />
           <.entities world={@world} />
           <.event_log world={@world} />
         </section>
@@ -557,14 +557,65 @@ defmodule ConvoyWeb.SimLive do
 
   attr :world, World, required: true
 
-  defp grid(assigns) do
+  # One grid per player's private harvesting room, then the single shared market
+  # room. Players can't enter each other's rooms — only the market is contested.
+  defp rooms(assigns) do
+    assigns = assign(assigns, :room_ids, Enum.sort(World.room_ids(assigns.world)))
+
+    ~H"""
+    <div class="space-y-4">
+      <%= if @room_ids == [] do %>
+        <div class="text-xs text-slate-500">No rooms yet — submit a bot to open one.</div>
+      <% end %>
+      <%= for room <- @room_ids do %>
+        <% color = player_color(room) %>
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <span class={["w-2.5 h-2.5 rounded-full", color.dot]}></span>
+            <span class={["text-xs font-mono", color.text]}>{room}'s room</span>
+            <span class="text-[10px] text-slate-500">
+              · private · {World.ore_remaining(@world, room)} ore
+            </span>
+          </div>
+          <.room_grid
+            world={@world}
+            cells={
+              for y <- 0..(@world.height - 1),
+                  x <- 0..(@world.width - 1),
+                  do: room_cell_info(@world, room, {x, y})
+            }
+          />
+        </div>
+      <% end %>
+      <div>
+        <div class="flex items-center gap-2 mb-1">
+          <span class="w-2.5 h-2.5 rounded-full bg-yellow-500"></span>
+          <span class="text-xs font-mono text-yellow-300">market</span>
+          <span class="text-[10px] text-slate-500">· shared · contested</span>
+        </div>
+        <.room_grid
+          world={@world}
+          cells={
+            for y <- 0..(@world.height - 1),
+                x <- 0..(@world.width - 1),
+                do: market_cell_info(@world, {x, y})
+          }
+        />
+      </div>
+    </div>
+    """
+  end
+
+  attr :world, World, required: true
+  attr :cells, :list, required: true
+
+  defp room_grid(assigns) do
     ~H"""
     <div
       class="inline-grid gap-px bg-slate-800 p-px rounded-lg border border-slate-700"
       style={"grid-template-columns: repeat(#{@world.width}, minmax(0, 1fr)); max-width: 640px;"}
     >
-      <%= for y <- 0..(@world.height - 1), x <- 0..(@world.width - 1) do %>
-        <% cell = cell_info(@world, {x, y}) %>
+      <%= for cell <- @cells do %>
         <div
           class={[
             "aspect-square flex items-center justify-center text-xs font-bold relative",
@@ -635,26 +686,19 @@ defmodule ConvoyWeb.SimLive do
   defp error_to_string(:too_many_files), do: "one file at a time"
   defp error_to_string(other), do: to_string(other)
 
-  defp cell_info(world, pos) do
+  # A cell in one player's private harvesting room: only that room's harvesters,
+  # the base, and that room's ore.
+  defp room_cell_info(world, room, pos) do
     {x, y} = pos
-    here = Enum.filter(world.entities, &(&1.x == x and &1.y == y))
-    ore = World.resource_at(world, pos)
+    here = entities_in(world, room, pos)
+    ore = World.resource_at(world, room, pos)
 
     cond do
       here != [] ->
-        lead = Enum.min_by(here, & &1.id)
-        owner = lead.owner
-        owners = here |> Enum.map(& &1.owner) |> Enum.uniq() |> Enum.join(",")
-        convoy? = Enum.any?(here, &(&1.kind == :convoy))
-        glyph = if convoy?, do: "🚚", else: "🤖"
-
-        %{glyph: glyph, bg: player_color(owner).cell, title: "#{owners} @ #{x},#{y}"}
+        %{glyph: "🤖", bg: player_color(room).cell, title: "#{room}/H#{hd(here).id} @ #{x},#{y}"}
 
       pos == world.base ->
         %{glyph: "🏠", bg: "bg-slate-700", title: "Base @ #{x},#{y}"}
-
-      pos == World.market(world) ->
-        %{glyph: "🏪", bg: "bg-yellow-800", title: "Market @ #{x},#{y}"}
 
       ore > 0 ->
         %{glyph: "", bg: ore_bg(ore), title: "Ore: #{ore} @ #{x},#{y}"}
@@ -662,6 +706,35 @@ defmodule ConvoyWeb.SimLive do
       true ->
         %{glyph: "", bg: "bg-slate-900", title: ""}
     end
+  end
+
+  # A cell in the shared market room: convoys (from any player), the sell-point,
+  # and the entry. This is the only place players' entities can meet.
+  defp market_cell_info(world, pos) do
+    {x, y} = pos
+    here = entities_in(world, :market, pos)
+
+    cond do
+      here != [] ->
+        lead = Enum.min_by(here, & &1.id)
+        owners = here |> Enum.map(& &1.owner) |> Enum.uniq() |> Enum.join(",")
+        %{glyph: "🚚", bg: player_color(lead.owner).cell, title: "#{owners} @ #{x},#{y}"}
+
+      pos == World.market(world) ->
+        %{glyph: "🏪", bg: "bg-yellow-800", title: "Market @ #{x},#{y}"}
+
+      pos == world.market_entry ->
+        %{glyph: "🚪", bg: "bg-slate-700", title: "Convoy entry @ #{x},#{y}"}
+
+      true ->
+        %{glyph: "", bg: "bg-slate-900", title: ""}
+    end
+  end
+
+  defp entities_in(world, room, {x, y}) do
+    world.entities
+    |> Enum.filter(&(&1.room == room and &1.x == x and &1.y == y))
+    |> Enum.sort_by(& &1.id)
   end
 
   defp ore_bg(amount) do

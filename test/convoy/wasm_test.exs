@@ -110,8 +110,13 @@ defmodule Convoy.WasmTest do
     seek = fn code -> "(module (func (export \"decide\") #{@abi} (i32.const #{code})))" end
 
     # Base at (0,0). Near node east (1,0); far-from-base node south (0,10).
-    world = %{World.generate(seed: 1) | base: {0, 0}, resources: %{{1, 0} => 5, {0, 10} => 5}}
-    e = %{id: 1, x: 0, y: 0, cargo: 0, cargo_max: 5, last_action: :idle}
+    world = %{
+      World.generate(seed: 1)
+      | base: {0, 0},
+        rooms: %{"p1" => %{resources: %{{1, 0} => 5, {0, 10} => 5}}}
+    }
+
+    e = %{id: 1, x: 0, y: 0, owner: "p1", room: "p1", cargo: 0, cargo_max: 5, last_action: :idle}
 
     {:ok, near} = Wasm.instantiate(seek.(4))
     {:ok, far} = Wasm.instantiate(seek.(6))
@@ -132,8 +137,13 @@ defmodule Convoy.WasmTest do
     # Base (0,0). Near node (2,0); far-from-base node (10,0). Harvester sits at
     # (9,0) — almost on the far node. Farthest-from-*harvester* would be the near
     # node (turn back); farthest-from-*base* is still (10,0) (keep going).
-    world = %{World.generate(seed: 1) | base: {0, 0}, resources: %{{2, 0} => 5, {10, 0} => 5}}
-    e = %{id: 1, x: 9, y: 0, cargo: 0, cargo_max: 5, last_action: :idle}
+    world = %{
+      World.generate(seed: 1)
+      | base: {0, 0},
+        rooms: %{"p1" => %{resources: %{{2, 0} => 5, {10, 0} => 5}}}
+    }
+
+    e = %{id: 1, x: 9, y: 0, owner: "p1", room: "p1", cargo: 0, cargo_max: 5, last_action: :idle}
 
     assert {:ok, {:move, {1, 0}}, _} = Wasm.decide(inst, e, world, 50_000)
     Wasm.stop(inst)
@@ -151,7 +161,7 @@ defmodule Convoy.WasmTest do
 
     assert World.total_refined(wasm_world) == World.total_refined(ref_world)
     assert World.total_refined(wasm_world) > 0
-    assert wasm_world.resources == ref_world.resources
+    assert wasm_world.rooms == ref_world.rooms
     # The Forge is exercised end-to-end: both climb the tech ladder identically.
     assert World.base(wasm_world, "p1") == World.base(ref_world, "p1")
     assert World.base(wasm_world, "p1").tech.refine > 0

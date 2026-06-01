@@ -27,7 +27,7 @@ defmodule Convoy.CompileTest do
 
     assert World.total_refined(wasm_world) == World.total_refined(baseline)
     assert World.total_refined(wasm_world) > 0
-    assert wasm_world.resources == baseline.resources
+    assert wasm_world.rooms == baseline.rooms
     # Parity includes the Forge: the compiled bot climbs the tech ladder
     # identically to the reference decider.
     assert World.base(wasm_world, "p1") == World.base(baseline, "p1")
