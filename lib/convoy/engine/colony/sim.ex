@@ -23,6 +23,7 @@ defmodule Convoy.Engine.Colony.Sim do
   @op_transfer 3
   @op_build 4
   @op_spawn 5
+  @op_launch 7
 
   @doc "Advance the colony one tick: run the brain, resolve its commands, advance timers/refining."
   @spec tick(World.t(), (World.t() -> [map()])) :: World.t()
@@ -133,7 +134,11 @@ defmodule Convoy.Engine.Colony.Sim do
     end
   end
 
-  # Unknown / idle / upgrade (not in v2.0) — no-op.
+  defp resolve(world, %{op: @op_launch}) do
+    if World.can_launch?(world), do: World.launch(world), else: world
+  end
+
+  # Unknown / idle / upgrade / convoy-steering (handled by the Region) — no-op here.
   defp resolve(world, _cmd), do: world
 
   # --- replenishment (keep a colony from mining itself to a dead end) ---

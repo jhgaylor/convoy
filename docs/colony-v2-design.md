@@ -41,12 +41,22 @@ Status: APPROVED · Mode: Builder
   never touches colony regions; a `rescue` around the tick so a transient fault (or
   dev hot-reload module purge) skips a tick instead of killing the region; and a
   unit-vs-building kind-name collision in the event log.
-- **NOT yet done (the deeper game):** the shared contested market + convoys +
-  multiplayer (port v1 patterns onto the colony world — the PvP endgame and
-  credits-as-score), an `upgrade` command + fabricator tech, building-occupancy /
-  pathing, snapshot persistence for colony regions, and a typed in-file SDK +
-  rewritten per-language example bots. Good point for `/plan-eng-review` on the
-  market/multiplayer integration.
+- **Phase 4 — DONE (parity + v1 removed; the colony game IS the game).**
+  Multiplayer + the shared contested market shipped: `Convoy.Engine.Colony.Market`
+  (convoys, capture/PvP, sell→credits), launch command (op 7) in the World/Sim, and
+  a multiplayer `Colony.Region` (many colonies, one market, one brain per colony per
+  tick). `ColonyLive` rewritten for multiplayer (scoreboard by credits, the shared
+  market grid, per-colony grids, join-as-player). **Cut `/` over to the colony game**
+  and re-pointed the HTTP API + `mix convoy.run` to the colony region. **Deleted the
+  entire v1 tier:** `Engine`, `Engine.{Region,World,Sim,Wasm,Render}`, `EventLog`,
+  `Persistence`, `SimLive`, `AdminLive`, `Sparkline`, the v1 examples + tests. Verified
+  in a browser: two colonies contest the market, convoys collide and one **seizes**
+  the other's shipment, credits accrue. **28 tests, 0 failures.**
+- **NOT yet done (future depth):** `upgrade` command + fabricator tech tier,
+  building-occupancy/pathing, colony snapshot persistence (regions are in-memory
+  now — a deploy restarts them), an admin/ops page, and typed in-file SDKs +
+  colony `tick` templates for the non-Rust languages (the language `Compile.template`s
+  are still the old v1 `decide` starters; only `examples/colony.rs` is a real colony bot).
 
 ## One-line
 

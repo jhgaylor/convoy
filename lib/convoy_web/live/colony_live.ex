@@ -1,27 +1,19 @@
 defmodule ConvoyWeb.ColonyLive do
   @moduledoc """
-  Spectator surface for Forge & Convoy **v2 (the colony model)**. Watch a colony
-  you program with one brain grow over time: harvesters mine, the forge turns ore
-  into goods, and the brain spends goods to build (refineries, storage) and spawn
-  more units. The page runs a bundled default bot out of the box; upload your own
-  to take over.
+  Spectator surface for Forge & Convoy (the colony game). Watch every player's
+  colony — program one brain that mines, forges, builds, and ships convoys across
+  the single shared **contested market**, where convoys collide and seize each
+  other's shipments (the only PvP). Score is credits. A bundled `demo` colony runs
+  out of the box; join by uploading your own bot.
   """
   use ConvoyWeb, :live_view
 
-  alias Convoy.Engine.Colony.{World, Region}
+  alias Convoy.Engine.Colony.{World, Market, Region}
   alias Convoy.Loader
 
   @speeds [{"0.5x", 800}, {"1x", 400}, {"2x", 200}, {"4x", 100}]
 
-  @ext_lang %{
-    ".rs" => :rust,
-    ".go" => :tinygo,
-    ".ts" => :assemblyscript,
-    ".zig" => :zig,
-    ".c" => :c,
-    ".wat" => :wat,
-    ".wasm" => :wasm
-  }
+  @ext_lang %{".rs" => :rust, ".go" => :tinygo, ".ts" => :assemblyscript, ".zig" => :zig, ".c" => :c, ".wat" => :wat, ".wasm" => :wasm}
 
   @impl true
   def mount(params, _session, socket) do
@@ -37,6 +29,8 @@ defmodule ConvoyWeb.ColonyLive do
      socket
      |> assign(:region_id, id)
      |> assign(:speeds, @speeds)
+     |> assign(:upload_player, "p1")
+     |> assign(:my_player, nil)
      |> assign(:upload_error, nil)
      |> assign_snapshot(Region.snapshot(id))
      |> allow_upload(:bot, accept: :any, max_entries: 1, max_file_size: 8_000_000)}
@@ -46,24 +40,22 @@ defmodule ConvoyWeb.ColonyLive do
   def handle_info({:colony_update, snap}, socket), do: {:noreply, assign_snapshot(socket, snap)}
 
   @impl true
-  def handle_event("play", _, socket), do: ctl(socket, &Region.play/1)
-  def handle_event("pause", _, socket), do: ctl(socket, &Region.pause/1)
-  def handle_event("step", _, socket), do: ctl(socket, &Region.step/1)
-  def handle_event("reset", _, socket), do: ctl(socket, &Region.reset(&1, 1))
-  def handle_event("set_speed", %{"ms" => ms}, socket), do: ctl(socket, &Region.set_speed(&1, String.to_integer(ms)))
-  def handle_event("validate_upload", _params, socket), do: {:noreply, socket}
+  def handle_event("play", _, s), do: ctl(s, &Region.play/1)
+  def handle_event("pause", _, s), do: ctl(s, &Region.pause/1)
+  def handle_event("step", _, s), do: ctl(s, &Region.step/1)
+  def handle_event("reset", _, s), do: ctl(s, &Region.reset(&1, 1))
+  def handle_event("set_speed", %{"ms" => ms}, s), do: ctl(s, &Region.set_speed(&1, String.to_integer(ms)))
+  def handle_event("validate_upload", params, socket), do: {:noreply, assign(socket, :upload_player, clean(params["player"], socket.assigns.upload_player))}
 
-  def handle_event("upload_bot", _params, socket) do
+  def handle_event("upload_bot", params, socket) do
     id = socket.assigns.region_id
+    player = clean(params["player"], socket.assigns.upload_player)
 
-    consumed =
-      consume_uploaded_entries(socket, :bot, fn %{path: path}, entry ->
-        {:ok, {File.read!(path), entry.client_name}}
-      end)
+    consumed = consume_uploaded_entries(socket, :bot, fn %{path: path}, e -> {:ok, {File.read!(path), e.client_name}} end)
 
     socket =
       case consumed do
-        [{content, name}] -> submit(socket, id, name, content)
+        [{content, name}] -> submit(socket, id, player, name, content)
         [] -> assign(socket, :upload_error, "Choose a file first.")
       end
 
@@ -75,11 +67,11 @@ defmodule ConvoyWeb.ColonyLive do
     {:noreply, socket}
   end
 
-  defp submit(socket, id, filename, content) do
+  defp submit(socket, id, player, filename, content) do
     with {:ok, lang} <- lang_from_ext(filename),
          {:ok, _backend, exec, display} <- Loader.prepare(lang, content),
-         :ok <- Region.submit_bot(id, exec, display) do
-      assign(socket, :upload_error, nil)
+         :ok <- Region.submit_player(id, player, exec, display) do
+      assign(socket, upload_error: nil, upload_player: player, my_player: player)
     else
       {:error, msg} -> assign(socket, :upload_error, msg)
     end
@@ -92,19 +84,26 @@ defmodule ConvoyWeb.ColonyLive do
     end
   end
 
+  defp clean(v, fallback) when is_binary(v) do
+    case String.replace(v, ~r/[^a-zA-Z0-9_-]/, "") do
+      "" -> fallback
+      s -> s
+    end
+  end
+
+  defp clean(_, fallback), do: fallback
+
   defp assign_snapshot(socket, snap) do
     socket
-    |> assign(:world, snap.world)
     |> assign(:status, snap.status)
     |> assign(:tick_ms, snap.tick_ms)
-    |> assign(:has_bot, snap.has_bot)
-    |> assign(:bot_display, snap.bot_display)
+    |> assign(:tick, snap.tick)
+    |> assign(:width, snap.width)
+    |> assign(:height, snap.height)
+    |> assign(:colonies, snap.colonies)
+    |> assign(:market, snap.market)
+    |> assign(:players, snap.players)
     |> assign(:last_fuel, snap.last_fuel)
-    |> assign(:last_error, Map.get(snap, :last_error))
-    |> assign(:pop, snap.pop)
-    |> assign(:pop_cap, snap.pop_cap)
-    |> assign(:storage_cap, snap.storage_cap)
-    |> assign(:ore_remaining, snap.ore_remaining)
   end
 
   defp region_id(%{"region" => name}) when is_binary(name) and name != "" do
@@ -116,6 +115,8 @@ defmodule ConvoyWeb.ColonyLive do
 
   defp region_id(_), do: "main"
 
+  # --- render ---
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -123,46 +124,37 @@ defmodule ConvoyWeb.ColonyLive do
       <header class="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
         <div>
           <h1 class="text-xl font-bold tracking-tight">
-            <span class="text-amber-400">Forge</span>
-            &amp; <span class="text-sky-400">Convoy</span>
-            <span class="ml-2 text-xs font-normal text-emerald-400/80 uppercase tracking-widest">colony</span>
+            <span class="text-amber-400">Forge</span> &amp; <span class="text-sky-400">Convoy</span>
             <span class="ml-2 text-xs font-normal text-slate-500">region {@region_id}</span>
           </h1>
           <p class="text-xs text-slate-500 mt-0.5">
-            Program one brain. Watch a colony mine, forge, build, and grow.
+            Program one brain per colony. Mine, forge, build, and run convoys across the contested market.
           </p>
         </div>
         <div class="flex items-center gap-4 text-sm">
-          <.stat label="tick" value={@world.tick} />
-          <.stat label="⛏ ore" value={@world.ore} accent="text-amber-300" />
-          <.stat label="◆ goods" value={"#{@world.goods}/#{@storage_cap}"} accent="text-sky-300" />
-          <.stat label="⚒ refined" value={@world.refined_total} accent="text-emerald-400" />
-          <.stat label="🚚 pop" value={"#{@pop}/#{@pop_cap}"} accent="text-fuchsia-300" />
+          <.stat label="tick" value={@tick} />
+          <.stat label="🏪 credits" value={total(@players, :credits)} accent="text-yellow-300" />
+          <.stat label="⚒ refined" value={total(@players, :refined)} accent="text-emerald-400" />
+          <.stat label="players" value={length(@players)} accent="text-sky-400" />
           <.stat label="fuel/tick" value={@last_fuel} accent="text-fuchsia-400" />
-          <span class={[
-            "px-2 py-0.5 rounded text-xs font-mono uppercase",
-            @status == :running && "bg-emerald-500/20 text-emerald-300",
-            @status != :running && "bg-slate-700 text-slate-300"
-          ]}>{@status}</span>
+          <span class={["px-2 py-0.5 rounded text-xs font-mono uppercase", @status == :running && "bg-emerald-500/20 text-emerald-300", @status != :running && "bg-slate-700 text-slate-300"]}>{@status}</span>
         </div>
       </header>
 
-      <div class="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6 p-6">
-        <section class="space-y-4">
+      <div class="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 p-6">
+        <section class="space-y-5">
           <.controls status={@status} speeds={@speeds} tick_ms={@tick_ms} />
-          <.colony_grid world={@world} />
-          <.event_log world={@world} />
+          <.market_view market={@market} players={@players} />
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <%= for {player, colony} <- Enum.sort_by(@colonies, fn {p, _} -> {-score(@players, p), p} end) do %>
+              <.colony_view player={player} colony={colony} color={color(player)} mine={player == @my_player} />
+            <% end %>
+          </div>
         </section>
 
         <section class="space-y-4">
-          <.colony_panel world={@world} pop={@pop} pop_cap={@pop_cap} storage_cap={@storage_cap} />
-          <.bot_panel
-            has_bot={@has_bot}
-            bot_display={@bot_display}
-            uploads={@uploads}
-            upload_error={@upload_error}
-            last_error={@last_error}
-          />
+          <.scoreboard players={@players} my_player={@my_player} />
+          <.submit_panel uploads={@uploads} upload_player={@upload_player} upload_error={@upload_error} />
           <.legend />
         </section>
       </div>
@@ -182,121 +174,137 @@ defmodule ConvoyWeb.ColonyLive do
       <button :if={@status != :running} phx-click="play" class="px-3 py-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold">▶ Play</button>
       <button :if={@status == :running} phx-click="pause" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600">⏸ Pause</button>
       <button phx-click="step" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600">⏭ Step</button>
-      <button phx-click="reset" data-confirm="Reset this colony?" class="px-3 py-1 rounded-md bg-slate-800 hover:bg-slate-700">↻ Reset</button>
+      <button phx-click="reset" data-confirm="Reset every colony in this region?" class="px-3 py-1 rounded-md bg-slate-800 hover:bg-slate-700">↻ Reset</button>
       <div class="flex items-center gap-1">
         <span class="text-xs text-slate-400 mr-1">speed</span>
         <%= for {label, ms} <- @speeds do %>
-          <button phx-click="set_speed" phx-value-ms={ms} class={[
-            "px-2 py-0.5 rounded text-xs font-mono",
-            @tick_ms == ms && "bg-sky-500 text-slate-950",
-            @tick_ms != ms && "bg-slate-800 hover:bg-slate-700 text-slate-300"
-          ]}>{label}</button>
+          <button phx-click="set_speed" phx-value-ms={ms} class={["px-2 py-0.5 rounded text-xs font-mono", @tick_ms == ms && "bg-sky-500 text-slate-950", @tick_ms != ms && "bg-slate-800 hover:bg-slate-700 text-slate-300"]}>{label}</button>
         <% end %>
       </div>
     </div>
     """
   end
 
-  attr :world, World, required: true
+  attr :market, Market, required: true
+  attr :players, :list, required: true
 
-  defp colony_grid(assigns) do
-    assigns =
-      assign(assigns, :cells,
-        for(
-          y <- 0..(assigns.world.config.height - 1),
-          x <- 0..(assigns.world.config.width - 1),
-          do: cell_info(assigns.world, {x, y})
-        )
-      )
-
+  defp market_view(assigns) do
     ~H"""
-    <div
-      class="inline-grid gap-px bg-slate-800 p-px rounded-lg border border-slate-700"
-      style={"grid-template-columns: repeat(#{@world.config.width}, minmax(0, 1fr)); max-width: 720px;"}
-    >
+    <div class="bg-slate-900 border border-yellow-700/40 rounded-lg p-3">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="w-2.5 h-2.5 rounded-full bg-yellow-500"></span>
+        <span class="text-xs font-mono text-yellow-300">the market</span>
+        <span class="text-[10px] text-slate-500">· shared · contested · {length(@market.convoys)} convoy(s) en route</span>
+      </div>
+      <.grid width={@market.width} height={@market.height} cells={
+        for y <- 0..(@market.height - 1), x <- 0..(@market.width - 1), do: market_cell(@market, {x, y})
+      } max="900px" />
+      <div :if={@market.events != []} class="mt-2 max-h-24 overflow-y-auto font-mono text-[11px] text-slate-400 space-y-0.5">
+        <%= for ev <- @market.events do %><div>{ev}</div><% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :player, :string, required: true
+  attr :colony, World, required: true
+  attr :color, :map, required: true
+  attr :mine, :boolean, default: false
+
+  defp colony_view(assigns) do
+    ~H"""
+    <div class={["bg-slate-900 border rounded-lg p-3", if(@mine, do: "border-fuchsia-600/50", else: "border-slate-800")]}>
+      <div class="flex items-center gap-2 mb-2">
+        <span class={["w-2.5 h-2.5 rounded-full", @color.dot]}></span>
+        <span class={["text-xs font-mono", @color.text]}>{@player}</span>
+        <span :if={@mine} class="text-[10px] text-fuchsia-400">(you)</span>
+        <span class="ml-auto font-mono text-[11px] text-slate-400">
+          ⛏{@colony.ore} ◆{@colony.goods} ⚒{@colony.refined_total} 🏪{@colony.credits}
+        </span>
+      </div>
+      <.grid width={@colony.config.width} height={@colony.config.height} cells={
+        for y <- 0..(@colony.config.height - 1), x <- 0..(@colony.config.width - 1), do: colony_cell(@colony, {x, y}, @color)
+      } max="460px" />
+      <% queued = Enum.filter(@colony.buildings, &(not &1.built)) %>
+      <div :if={queued != []} class="mt-2 space-y-1">
+        <%= for b <- queued do %>
+          <% {_c, time} = World.build_spec(@colony, b.kind) || {0, 1} %>
+          <div class="flex items-center gap-2 text-[11px]">
+            <span class="font-mono text-slate-400 w-16">{World.kind_name(b.kind)}</span>
+            <div class="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden"><div class="h-full bg-amber-400" style={"width: #{round((time - b.remaining) / max(time, 1) * 100)}%"}></div></div>
+            <span class="font-mono text-slate-500">{b.remaining}t</span>
+          </div>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :width, :integer, required: true
+  attr :height, :integer, required: true
+  attr :cells, :list, required: true
+  attr :max, :string, default: "600px"
+
+  defp grid(assigns) do
+    ~H"""
+    <div class="inline-grid gap-px bg-slate-800 p-px rounded-lg border border-slate-700" style={"grid-template-columns: repeat(#{@width}, minmax(0, 1fr)); max-width: #{@max};"}>
       <%= for c <- @cells do %>
-        <div class={["aspect-square flex items-center justify-center text-xs relative", c.bg]} title={c.title}>
-          {c.glyph}
-        </div>
+        <div class={["aspect-square flex items-center justify-center text-[10px] relative", c.bg]} title={c.title}>{c.glyph}</div>
       <% end %>
     </div>
     """
   end
 
-  attr :world, World, required: true
-  attr :pop, :integer, required: true
-  attr :pop_cap, :integer, required: true
-  attr :storage_cap, :integer, required: true
+  attr :players, :list, required: true
+  attr :my_player, :string, default: nil
 
-  defp colony_panel(assigns) do
+  defp scoreboard(assigns) do
     ~H"""
-    <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 space-y-3">
-      <div class="text-xs uppercase tracking-wide text-slate-400">Colony</div>
-
-      <div class="grid grid-cols-2 gap-2 text-sm">
-        <.kv k="⛏ ore (raw)" v={@world.ore} />
-        <.kv k="◆ goods" v={"#{@world.goods} / #{@storage_cap}"} />
-        <.kv k="⚒ refined" v={@world.refined_total} />
-        <.kv k="🚚 population" v={"#{@pop} / #{@pop_cap}"} />
-        <.kv k="ore in ground" v={World.ore_remaining(@world)} />
-        <.kv k="buildings" v={length(@world.buildings)} />
-      </div>
-
-      <div>
-        <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Build queue</div>
-        <% queued = Enum.filter(@world.buildings, &(not &1.built)) %>
-        <%= if queued == [] do %>
-          <div class="text-xs text-slate-600">— idle —</div>
-        <% else %>
-          <%= for b <- queued do %>
-            <% {_cost, time} = World.build_spec(@world, b.kind) || {0, 1} %>
-            <div class="flex items-center gap-2 text-xs mb-1">
-              <span class="font-mono text-slate-300 w-20">{World.kind_name(b.kind)}</span>
-              <div class="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden">
-                <div class="h-full bg-amber-400" style={"width: #{round((time - b.remaining) / max(time, 1) * 100)}%"}></div>
-              </div>
-              <span class="font-mono text-slate-500 w-12 text-right">{b.remaining}t</span>
-            </div>
-          <% end %>
-        <% end %>
-      </div>
-
-      <div :if={@world.spawn_queue != []}>
-        <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Spawning</div>
-        <%= for s <- @world.spawn_queue do %>
-          <div class="text-xs font-mono text-slate-400">{World.unit_kind_name(s.kind)} · {s.remaining}t</div>
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+      <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Scoreboard · credits</div>
+      <%= if @players == [] do %>
+        <div class="text-xs text-slate-500">No colonies yet — upload a bot to join.</div>
+      <% end %>
+      <div class="space-y-1">
+        <%= for p <- @players do %>
+          <% c = color(p.id) %>
+          <div class="flex items-center gap-2 text-sm">
+            <span class={["w-2.5 h-2.5 rounded-full", c.dot]}></span>
+            <span class={["font-mono text-xs", c.text]}>{p.id}</span>
+            <span :if={p.id == @my_player} class="text-[10px] text-fuchsia-400">(you)</span>
+            <span :if={p.error} class="text-[10px] text-rose-400" title={p.error}>⛔</span>
+            <span class="ml-auto flex items-center gap-2 font-mono text-xs">
+              <span class="text-slate-400" title="harvesters · convoys en route">🤖{p.pop} 🚚{p.convoys}</span>
+              <span class="text-sky-300" title="goods on hand">◆{p.goods}</span>
+              <span class="text-emerald-300" title="lifetime refined">⚒{p.refined}</span>
+              <span class="font-bold text-yellow-300 w-12 text-right" title="lifetime market credits (score)">🏪{p.credits}</span>
+            </span>
+          </div>
         <% end %>
       </div>
     </div>
     """
   end
 
-  attr :has_bot, :boolean, required: true
-  attr :bot_display, :string, default: nil
   attr :uploads, :any, required: true
+  attr :upload_player, :string, required: true
   attr :upload_error, :string, default: nil
-  attr :last_error, :string, default: nil
 
-  defp bot_panel(assigns) do
+  defp submit_panel(assigns) do
     ~H"""
     <form phx-change="validate_upload" phx-submit="upload_bot" class="bg-slate-900 border border-slate-800 rounded-lg p-3">
-      <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">The brain</div>
-      <p class="text-[11px] text-slate-500 mb-2">
-        <%= if @has_bot do %>
-          Running: <span class="text-emerald-300 font-mono">{@bot_display}</span>. Upload a file to take over.
-        <% else %>
-          No brain loaded — upload a colony bot to drive this colony.
-        <% end %>
-      </p>
-      <div class="flex flex-col gap-2">
+      <div class="flex items-center justify-between">
+        <div class="text-xs uppercase tracking-wide text-slate-400">Join — submit a bot</div>
+        <label class="text-xs text-slate-400 flex items-center gap-1">player
+          <input type="text" name="player" value={@upload_player} class="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono text-slate-100" />
+        </label>
+      </div>
+      <p class="text-[11px] text-slate-500 mt-1">A colony bot exports <code>inbuf/outbuf/tick</code>. Upload <code>.rs .go .ts .zig .c .wat .wasm</code> — see <code>examples/colony.rs</code>.</p>
+      <div class="flex flex-col gap-2 mt-2">
         <.live_file_input upload={@uploads.bot} class="text-xs text-slate-300 max-w-full" />
         <button type="submit" class="px-3 py-1 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-slate-950 font-semibold text-sm self-start">⬆ Submit</button>
       </div>
-      <p class="text-[10px] text-slate-500 mt-1">
-        Colony ABI: exports <code>inbuf/outbuf/tick</code>. See <code>examples/colony.rs</code>.
-      </p>
       <p :if={@upload_error} class="mt-2 text-[11px] font-mono text-rose-300 whitespace-pre-wrap">⛔ {@upload_error}</p>
-      <p :if={@last_error} class="mt-2 text-[11px] font-mono text-rose-300 whitespace-pre-wrap">bot error: {@last_error}</p>
     </form>
     """
   end
@@ -304,27 +312,7 @@ defmodule ConvoyWeb.ColonyLive do
   defp legend(assigns) do
     ~H"""
     <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-[11px] text-slate-500 leading-relaxed">
-      <span class="text-slate-300">🏠</span> spawner ·
-      <span class="text-slate-300">⚙</span> refinery ·
-      <span class="text-slate-300">📦</span> storage ·
-      <span class="text-slate-300">🤖</span> harvester ·
-      <span class="text-amber-400">▓</span> ore deposit ·
-      a dimmed building is under construction.
-    </div>
-    """
-  end
-
-  attr :world, World, required: true
-
-  defp event_log(assigns) do
-    ~H"""
-    <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
-      <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Event log</div>
-      <div class="space-y-1 max-h-40 overflow-y-auto font-mono text-xs text-slate-400">
-        <%= for ev <- @world.events do %>
-          <div>{ev}</div>
-        <% end %>
-      </div>
+      <span class="text-slate-300">🏠</span> spawner · <span class="text-slate-300">⚙</span> refinery · <span class="text-slate-300">📦</span> storage · <span class="text-slate-300">🤖</span> harvester · <span class="text-amber-400">▓</span> ore · <span class="text-yellow-300">🚚</span> convoy · <span class="text-yellow-300">🏪</span> market. Ship convoys across the market for credits; rivals can ambush them.
     </div>
     """
   end
@@ -342,51 +330,66 @@ defmodule ConvoyWeb.ColonyLive do
     """
   end
 
-  attr :k, :string, required: true
-  attr :v, :any, required: true
+  # --- cell rendering ---
 
-  defp kv(assigns) do
-    ~H"""
-    <div class="flex items-center justify-between bg-slate-950/50 rounded px-2 py-1">
-      <span class="text-[11px] text-slate-400">{@k}</span>
-      <span class="font-mono text-slate-200">{@v}</span>
-    </div>
-    """
-  end
-
-  # --- cell rendering: units on top, then buildings, then deposits ---
-
-  defp cell_info(world, {x, y} = pos) do
-    units = Enum.filter(world.units, &(&1.x == x and &1.y == y))
-    building = World.building_at(world, pos)
-    ore = World.deposit_at(world, pos)
+  defp colony_cell(colony, {x, y} = pos, color) do
+    units = Enum.filter(colony.units, &(&1.x == x and &1.y == y))
+    building = World.building_at(colony, pos)
+    ore = World.deposit_at(colony, pos)
 
     cond do
       units != [] ->
-        u = hd(units)
-        extra = if length(units) > 1, do: " (+#{length(units) - 1})", else: ""
-        %{glyph: "🤖", bg: "bg-emerald-600/70", title: "harvester #{u.id} @ #{x},#{y}, cargo #{u.cargo}/#{u.cargo_max}#{extra}"}
+        n = length(units)
+        %{glyph: "🤖", bg: color.cell, title: "harvester @ #{x},#{y}#{if n > 1, do: " (x#{n})", else: ""}"}
 
       building != nil ->
         dim = if building.built, do: "", else: " opacity-40"
-        %{glyph: building_glyph(building.kind), bg: "bg-slate-700#{dim}", title: "#{World.kind_name(building.kind)} @ #{x},#{y}#{if building.built, do: "", else: " (building, #{building.remaining}t)"}"}
+        %{glyph: bglyph(building.kind), bg: "bg-slate-700#{dim}", title: "#{World.kind_name(building.kind)} @ #{x},#{y}#{if building.built, do: "", else: " (#{building.remaining}t)"}"}
 
-      ore > 0 ->
-        %{glyph: "", bg: ore_bg(ore), title: "ore: #{ore} @ #{x},#{y}"}
-
-      true ->
-        %{glyph: "", bg: "bg-slate-900", title: ""}
+      ore > 0 -> %{glyph: "", bg: ore_bg(ore), title: "ore #{ore} @ #{x},#{y}"}
+      true -> %{glyph: "", bg: "bg-slate-900", title: ""}
     end
   end
 
-  defp building_glyph(0), do: "🏠"
-  defp building_glyph(1), do: "⚙"
-  defp building_glyph(2), do: "📦"
-  defp building_glyph(3), do: "⚒"
-  defp building_glyph(_), do: "▫"
+  defp market_cell(market, {x, y} = pos) do
+    here = Enum.filter(market.convoys, &(&1.x == x and &1.y == y))
+
+    cond do
+      here != [] ->
+        lead = Enum.min_by(here, & &1.id)
+        owners = here |> Enum.map(& &1.owner) |> Enum.uniq()
+        %{glyph: "🚚", bg: color(lead.owner).cell, title: "#{Enum.join(owners, ",")} @ #{x},#{y}"}
+
+      pos == market.market -> %{glyph: "🏪", bg: "bg-yellow-800", title: "market @ #{x},#{y}"}
+      pos == market.entry -> %{glyph: "🚪", bg: "bg-slate-700", title: "convoy entry @ #{x},#{y}"}
+      true -> %{glyph: "", bg: "bg-slate-900", title: ""}
+    end
+  end
+
+  defp bglyph(0), do: "🏠"
+  defp bglyph(1), do: "⚙"
+  defp bglyph(2), do: "📦"
+  defp bglyph(3), do: "⚒"
+  defp bglyph(_), do: "▫"
 
   defp ore_bg(a) when a >= 30, do: "bg-amber-500"
   defp ore_bg(a) when a >= 15, do: "bg-amber-600"
   defp ore_bg(a) when a >= 5, do: "bg-amber-700"
   defp ore_bg(_), do: "bg-amber-800"
+
+  # --- view helpers ---
+
+  defp total(players, key), do: players |> Enum.map(&Map.get(&1, key, 0)) |> Enum.sum()
+  defp score(players, id), do: (Enum.find(players, &(&1.id == id)) || %{credits: 0}).credits
+
+  @palette [
+    %{dot: "bg-emerald-400", text: "text-emerald-300", cell: "bg-emerald-600"},
+    %{dot: "bg-sky-400", text: "text-sky-300", cell: "bg-sky-600"},
+    %{dot: "bg-fuchsia-400", text: "text-fuchsia-300", cell: "bg-fuchsia-600"},
+    %{dot: "bg-amber-400", text: "text-amber-300", cell: "bg-amber-600"},
+    %{dot: "bg-rose-400", text: "text-rose-300", cell: "bg-rose-600"},
+    %{dot: "bg-cyan-400", text: "text-cyan-300", cell: "bg-cyan-600"}
+  ]
+
+  defp color(player_id), do: Enum.at(@palette, rem(:erlang.phash2(player_id), length(@palette)))
 end

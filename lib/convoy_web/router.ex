@@ -17,11 +17,9 @@ defmodule ConvoyWeb.Router do
   scope "/", ConvoyWeb do
     pipe_through :browser
 
-    live "/", SimLive, :index
-    # Forge & Convoy v2 — the colony model (program one brain, watch a base grow).
-    live "/colony", ColonyLive, :index
-    # World overview / admin. Put behind auth before exposing publicly.
-    live "/admin", AdminLive, :index
+    # Forge & Convoy — the colony game (program one brain per colony, ship convoys
+    # across the shared contested market). This is the game.
+    live "/", ColonyLive, :index
   end
 
   scope "/api", ConvoyWeb do

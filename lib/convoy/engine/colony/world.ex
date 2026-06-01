@@ -47,6 +47,9 @@ defmodule Convoy.Engine.Colony.World do
     spawn_time_harvester: 8,
     pop_cap_base: 4,
     pop_cap_step: 2,
+    # convoys: goods spent to load one, credits a delivered shipment earns
+    shipment_size: 20,
+    shipment_value: 30,
     # resource layout / replenishment
     resource_nodes: 6,
     resource_amount: 40,
@@ -66,6 +69,9 @@ defmodule Convoy.Engine.Colony.World do
             deposits: %{},
             # in-flight spawns: [%{kind, remaining}]
             spawn_queue: [],
+            # transient outbox: convoys launched this tick for the Region to inject
+            # into the shared market (drained + cleared each tick). [%{cargo}]
+            launches: [],
             next_id: 1,
             events: []
 
@@ -137,6 +143,26 @@ defmodule Convoy.Engine.Colony.World do
   @doc "Goods cost + spawn time for a unit kind (nil if unknown to v2.0)."
   def spawn_spec(%World{} = w, @unit_harvester), do: {cfg(w, :spawn_cost_harvester), cfg(w, :spawn_time_harvester)}
   def spawn_spec(_w, _kind), do: nil
+
+  @doc "Goods to load a convoy + credits a delivered shipment earns."
+  def shipment_size(%World{} = w), do: cfg(w, :shipment_size)
+  def shipment_value(%World{} = w), do: cfg(w, :shipment_value)
+
+  @doc "Can this colony afford to load a convoy?"
+  def can_launch?(%World{} = w), do: w.goods >= cfg(w, :shipment_size)
+
+  @doc "Spend goods to load a convoy; queue it in `launches` for the Region to inject into the market."
+  def launch(%World{} = w) do
+    %{spend_goods(w, cfg(w, :shipment_size)) | launches: [%{cargo: cfg(w, :shipment_value)} | w.launches]}
+    |> note("Loaded a convoy — #{cfg(w, :shipment_size)} goods bound for market.")
+  end
+
+  @doc "Take and clear this tick's launched convoys (the Region drains them into the market)."
+  def take_launches(%World{launches: ls} = w), do: {ls, %{w | launches: []}}
+
+  @doc "Credit a delivered shipment to this colony's lifetime credits (the score)."
+  def credit(%World{} = w, amount) when amount > 0, do: %{w | credits: w.credits + amount}
+  def credit(%World{} = w, _), do: w
 
   # --- mutations (called by the Sim, in resolution order) ---
 

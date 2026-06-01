@@ -1,69 +1,42 @@
 defmodule Mix.Tasks.Convoy.Run do
-  @shortdoc "Run a local bot file in the Forge & Convoy simulation"
+  @shortdoc "Push a local colony bot into a running Forge & Convoy server"
 
   @moduledoc """
-  Develop a harvester bot in your editor, run one command, watch it in the sim.
+  Develop a colony bot in your editor, run one command, watch it in the sim.
 
       mix convoy.run path/to/bot.rs
 
   The language is inferred from the extension:
 
-      .rs  -> Rust            .ts -> AssemblyScript
-      .go  -> TinyGo          .wat -> WebAssembly text
-      .wasm -> precompiled module
+      .rs  -> Rust            .ts  -> AssemblyScript
+      .go  -> TinyGo          .zig -> Zig            .c -> C
+      .wat -> WebAssembly text          .wasm -> precompiled module
 
-  ## Two modes
-
-  **Server (default).** Pushes the bot to a running `mix phx.server` over HTTP,
-  into a named region, as a named player, and starts it. Open
-  `http://localhost:4000/?region=dev` in a browser and the UI just *watches*.
-  Combine with `--watch` to re-push on every save: edit, save, see it update.
+  Pushes the bot to a running `mix phx.server` over HTTP, into a named region, as
+  a named player, and it starts running. Open `http://localhost:4000/?region=dev`
+  and the UI just *watches*. Combine with `--watch` to re-push on every save.
 
       mix phx.server                       # in one terminal
       mix convoy.run bot.rs --watch        # in another
 
   **Multiplayer.** Submit different `--player` ids into the same `--region` and
-  they run as independent players in one shared world:
+  they run as independent colonies in one shared world (contesting the market):
 
       mix convoy.run alice.rs --region arena --player alice
       mix convoy.run bob.ts  --region arena --player bob
-
-  **Headless (`--headless`).** Runs the sim in-process and renders it as ASCII
-  in this terminal. No server, no browser — the fastest iteration loop.
-
-      mix convoy.run bot.rs --headless --ticks 300
 
   ## Options
 
       --region NAME   region to load into (default "dev")
       --player NAME   player id to submit as (default "p1")
       --server URL    server base url (default http://localhost:4000)
-      --headless      run locally and render to the terminal
-      --ticks N       headless: ticks to simulate (default 200)
-      --every N       headless: print a frame every N ticks (default ticks/8)
-      --seed N        headless: world seed (default 1)
       --lang LANG     override language detection
-      --watch         re-run whenever the file changes
+      --watch         re-push whenever the file changes
   """
   use Mix.Task
 
-  alias Convoy.Loader
-  alias Convoy.Engine.{World, Wasm, Sim, Render}
-
-  @fuel_budget 50_000
-
-  @switches [
-    region: :string,
-    player: :string,
-    server: :string,
-    headless: :boolean,
-    ticks: :integer,
-    every: :integer,
-    seed: :integer,
-    lang: :string,
-    watch: :boolean
-  ]
-  @aliases [r: :region, p: :player, s: :server, h: :headless, t: :ticks, w: :watch]
+  @switches [region: :string, player: :string, server: :string, lang: :string, watch: :boolean]
+  @aliases [r: :region, p: :player, s: :server, w: :watch]
 
   @impl Mix.Task
   def run(argv) do
@@ -72,21 +45,11 @@ defmodule Mix.Tasks.Convoy.Run do
     File.exists?(file) || abort("no such file: #{file}")
 
     lang = language(opts[:lang], file)
-
-    # Headless needs the engine (WasmSupervisor etc.) running in this VM.
-    if opts[:headless], do: Mix.Task.run("app.start")
-
     once(file, lang, opts)
-
     if opts[:watch], do: watch(file, fn -> once(file, lang, opts) end)
   end
 
-  # --- one execution ---
-
-  defp once(file, lang, opts) do
-    source = File.read!(file)
-    if opts[:headless], do: run_headless(source, lang, opts), else: run_server(source, lang, opts)
-  end
+  defp once(file, lang, opts), do: run_server(File.read!(file), lang, opts)
 
   # --- server mode: push to a running phx.server ---
 
@@ -100,82 +63,24 @@ defmodule Mix.Tasks.Convoy.Run do
 
     body =
       case lang do
-        :wasm ->
-          Map.merge(base, %{language: "wasm", source: Base.encode64(source), encoding: "base64"})
-
-        _ ->
-          Map.merge(base, %{language: to_string(lang), source: source})
+        :wasm -> Map.merge(base, %{language: "wasm", source: Base.encode64(source), encoding: "base64"})
+        _ -> Map.merge(base, %{language: to_string(lang), source: source})
       end
 
     info("→ #{lang} as player '#{player}' → #{url}")
 
     case http_post(url, Jason.encode!(body)) do
       {:error, reason} ->
-        abort(
-          "could not reach #{server} (is `mix phx.server` running?): #{inspect(reason)}",
-          opts[:watch]
-        )
+        abort("could not reach #{server} (is `mix phx.server` running?): #{inspect(reason)}", opts[:watch])
 
       {200, payload} ->
-        backend = payload["backend"] || "?"
-        ok("player '#{player}' loaded (#{backend}) in region '#{region}'")
+        ok("player '#{player}' loaded (#{payload["backend"] || "?"}) in region '#{region}'")
         info("   watch it: #{server}/?region=#{region}")
 
       {status, payload} ->
-        abort(
-          "server returned #{status}: #{payload["message"] || inspect(payload)}",
-          opts[:watch]
-        )
+        abort("server returned #{status}: #{payload["message"] || inspect(payload)}", opts[:watch])
     end
   end
-
-  # --- headless mode: simulate locally, render to terminal ---
-
-  defp run_headless(source, lang, opts) do
-    case build_decider(lang, source) do
-      {:ok, decider, cleanup} ->
-        ticks = opts[:ticks] || 200
-        every = opts[:every] || max(div(ticks, 8), 1)
-        seed = opts[:seed] || 1
-        player = opts[:player] || World.default_player()
-
-        info("running #{lang} as player '#{player}' for #{ticks} ticks (seed #{seed})\n")
-
-        # A fresh world has no players (the browser is a spectator); the headless
-        # runner joins one so there are harvesters to drive.
-        start = World.generate(seed: seed) |> World.add_player(player)
-
-        final =
-          Enum.reduce(1..ticks, start, fn t, world ->
-            world = Sim.tick(world, decider)
-            if rem(t, every) == 0, do: print_frame(world)
-            world
-          end)
-
-        IO.puts("\n── final ──")
-        print_frame(final)
-        cleanup.()
-
-      {:error, msg} ->
-        abort(msg, opts[:watch])
-    end
-  end
-
-  # Returns {:ok, decide_fun, cleanup_fun} | {:error, msg}. Everything compiles
-  # to a WASM module the headless sim drives.
-  defp build_decider(lang, source) do
-    with {:ok, :wasm, exec, _display} <- Loader.prepare(lang, source),
-         {:ok, instance} <- Wasm.instantiate(exec) do
-      decider = fn entity, world ->
-        {:ok, intent, _used} = Wasm.decide(instance, entity, world, @fuel_budget)
-        intent
-      end
-
-      {:ok, decider, fn -> Wasm.stop(instance) end}
-    end
-  end
-
-  defp print_frame(world), do: IO.puts(Render.frame(world) <> "\n")
 
   # --- file watching ---
 
@@ -184,8 +89,6 @@ defmodule Mix.Tasks.Convoy.Run do
     {:ok, pid} = FileSystem.start_link(dirs: [Path.dirname(abs)])
     FileSystem.subscribe(pid)
     info("\n👀 watching #{Path.basename(abs)} — save to reload (ctrl-c to stop)")
-    # Match on basename, not full path: macOS reports /private/tmp/... for
-    # /tmp/..., and editors save atomically via temp-file rename.
     watch_loop(Path.basename(abs), run_fun)
   end
 
@@ -206,7 +109,6 @@ defmodule Mix.Tasks.Convoy.Run do
     end
   end
 
-  # Editors fire several events per save; collapse a burst into one reload.
   defp drain_events do
     receive do
       {:file_event, _pid, _} -> drain_events()
@@ -238,11 +140,8 @@ defmodule Mix.Tasks.Convoy.Run do
     request = {String.to_charlist(url), [], ~c"application/json", json}
 
     case :httpc.request(:post, request, [{:timeout, 30_000}], []) do
-      {:ok, {{_v, status, _reason}, _headers, body}} ->
-        {status, decode(IO.iodata_to_binary([body]))}
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, {{_v, status, _reason}, _headers, body}} -> {status, decode(IO.iodata_to_binary([body]))}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -256,7 +155,6 @@ defmodule Mix.Tasks.Convoy.Run do
   defp info(msg), do: IO.puts(IO.ANSI.faint() <> msg <> IO.ANSI.reset())
   defp ok(msg), do: IO.puts(IO.ANSI.green() <> "✓ " <> msg <> IO.ANSI.reset())
 
-  # When watching, a failed run shouldn't kill the watcher — just report it.
   defp abort(msg, watching \\ false)
   defp abort(msg, true), do: IO.puts(IO.ANSI.red() <> "✗ " <> msg <> IO.ANSI.reset())
 

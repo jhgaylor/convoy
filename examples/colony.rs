@@ -82,6 +82,7 @@ const OP_MOVE: u32 = 2; // a=dx, b=dy
 const OP_TRANSFER: u32 = 3; // a=destination building id
 const OP_BUILD: u32 = 4; // a=building kind, b=(x<<8 | y)
 const OP_SPAWN: u32 = 5; // a=unit kind
+const OP_LAUNCH: u32 = 7; // load a convoy and run it to the market for credits
 
 const UNIT_HARVESTER: u32 = 0;
 const BLD_SPAWNER: u32 = 0;
@@ -243,8 +244,13 @@ fn colony_logic(out: &mut Out) {
     // Invalid placements/over-cap spawns are no-ops the sim rejects — we don't
     // have to be perfect, just intentful.
     if goods >= 40 && refineries < 2 && !refinery_building {
+        // throughput first: build up to two refineries before shipping.
         let (px, py) = (spawner_x + 1, spawner_y); // sim validates the cell
         out.push(OP_BUILD, 0, BLD_REFINERY as i32, ((px << 8) | py) as i32);
+    } else if refineries >= 1 && goods >= 25 {
+        // once refining, ship surplus goods to the market for credits (the score).
+        // Convoys auto-advance to market; collisions with rivals are PvP.
+        out.push(OP_LAUNCH, 0, 0, 0);
     } else if goods >= 20 && n_units < 6 {
         out.push(OP_SPAWN, 0, UNIT_HARVESTER as i32, 0);
     }

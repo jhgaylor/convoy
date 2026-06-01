@@ -28,8 +28,8 @@ defmodule ConvoyWeb.RegionController do
   """
   use ConvoyWeb, :controller
 
-  alias Convoy.{Engine, Loader}
-  alias Convoy.Engine.World
+  alias Convoy.Loader
+  alias Convoy.Engine.Colony.Region
 
   @languages %{
     "wat" => :wat,
@@ -44,7 +44,7 @@ defmodule ConvoyWeb.RegionController do
   # JSON body: {player, language, source[, encoding: "base64"]}
   def load(conn, %{"id" => id} = params) do
     # CLI-driven regions are durable so a deploy resumes them.
-    Engine.ensure_region(id, persist: true)
+    Region.ensure(id)
 
     with {:ok, lang} <- fetch_language(params),
          {:ok, source} <- fetch_source(params) do
@@ -57,7 +57,7 @@ defmodule ConvoyWeb.RegionController do
   # Raw body upload: the request body IS the source (or .wasm bytes). Language
   # comes from ?lang= (or is inferred from ?file=bot.rs).
   def upload(conn, %{"id" => id} = params) do
-    Engine.ensure_region(id, persist: true)
+    Region.ensure(id)
 
     case resolve_language(params) do
       {:error, msg} ->
@@ -75,9 +75,7 @@ defmodule ConvoyWeb.RegionController do
   # Shared: compile/prepare, load the player, start the sim, respond.
   defp submit(conn, id, player, lang, source) do
     with {:ok, backend, exec, display} <- Loader.prepare(lang, source),
-         :ok <- Engine.submit_player(id, player, backend, exec, display) do
-      Engine.play(id)
-
+         :ok <- Region.submit_player(id, player, exec, display) do
       json(conn, %{
         status: "ok",
         region: id,
@@ -121,15 +119,15 @@ defmodule ConvoyWeb.RegionController do
   defp player_id(params) do
     case params["player"] do
       p when is_binary(p) and p != "" ->
-        # keep ids tame and filesystem/registry-safe
+        # keep ids tame and registry-safe
         String.replace(p, ~r/[^a-zA-Z0-9_-]/, "") |> default_if_blank()
 
       _ ->
-        World.default_player()
+        "p1"
     end
   end
 
-  defp default_if_blank(""), do: World.default_player()
+  defp default_if_blank(""), do: "p1"
   defp default_if_blank(p), do: p
 
   defp fetch_language(params) do
