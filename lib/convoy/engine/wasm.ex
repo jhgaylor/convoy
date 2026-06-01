@@ -217,14 +217,20 @@ defmodule Convoy.Engine.Wasm do
   # memory survives a deploy or stop/resume, and replays stay bit-identical
   # across the freeze (§11). Capped hard, treated as opaque untrusted bytes.
 
-  # Hard cap on persisted memory: one wasm page. A bot can use more memory live,
-  # but only the first page survives a freeze (primer §8: "cap its size hard").
-  @mem_cap 64 * 1024
+  # Hard cap on persisted memory (primer §8: "cap its size hard"). We snapshot
+  # the module's *actual* current memory size up to this bound — not a fixed
+  # small slice — because toolchains place persistent data very differently:
+  # AssemblyScript keeps statics in page 0, but Rust/lld reserves a ~1 MB shadow
+  # stack first and puts statics above it, so a 64 KB cap would silently miss all
+  # Rust state. The blob is mostly zeros (unused stack), so snapshots are stored
+  # compressed (see `Convoy.Persistence`) and stay tiny on disk.
+  @mem_cap 4 * 1024 * 1024
 
   @doc """
-  Read up to one page of a module's linear memory for persistence. Returns the
-  bytes, or `nil` if the module exports no memory (then it just has no
-  freeze/thaw persistence — it still keeps memory live within a region).
+  Read a module's linear memory for persistence — its full current size, capped
+  at `@mem_cap`. Returns the bytes, or `nil` if the module exports no memory
+  (then it just has no freeze/thaw persistence — it still keeps memory live
+  within a region).
   """
   @spec snapshot_memory(instance() | nil) :: binary() | nil
   def snapshot_memory(%{pid: pid, store: store}) do

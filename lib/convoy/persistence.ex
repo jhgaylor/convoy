@@ -38,7 +38,10 @@ defmodule Convoy.Persistence do
     path = path(region_id)
     tmp = path <> ".tmp"
 
-    with :ok <- File.write(tmp, :erlang.term_to_binary(snapshot)),
+    # Compressed: a snapshot now carries each player's wasm linear memory, which
+    # for some toolchains is ~1 MB of mostly-zero stack — it compresses to almost
+    # nothing. `binary_to_term` reads compressed terms transparently.
+    with :ok <- File.write(tmp, :erlang.term_to_binary(snapshot, [:compressed])),
          :ok <- File.rename(tmp, path) do
       :ok
     end

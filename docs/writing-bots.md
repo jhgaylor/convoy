@@ -127,9 +127,18 @@ caveats:
   Rust (`cdylib`) and AssemblyScript (`--runtime stub`) do by default; for
   Zig / C / TinyGo you may need an `--export-memory` linker flag (live
   tick-to-tick memory works regardless).
-- It's deterministic and untrusted: keep state in linear memory, not in
-  mutable wasm globals (those aren't snapshotted), and never assume it's
-  larger than 64 KB.
+- It's deterministic and untrusted: keep state in **linear memory**, not in
+  mutable wasm globals (those aren't snapshotted). In Rust a plain `static mut`
+  scalar can be promoted to a global under `-O` — use a `static mut [i32; N]`
+  with `read_volatile`/`write_volatile` (see `examples/strategist.rs`). In
+  AssemblyScript, arrays import `env.abort` (which the sandbox rejects); use a
+  `memory.data(n)` buffer with raw `load`/`store` (see `examples/strategist.ts`).
+
+Worked examples that use Memory to play the full game well —
+[`examples/strategist.rs`](../examples/strategist.rs) and
+[`examples/strategist.ts`](../examples/strategist.ts) — remember the tick they
+last shipped, so they can space convoys out on a cooldown (bunched convoys get
+ambushed at the market).
 
 ## Running your bot
 
