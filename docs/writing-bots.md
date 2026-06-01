@@ -77,6 +77,39 @@ next level. A common opening: harvest a few loads, then start funnelling goods
 into `refine` so the rest of the game compounds. The trade-off is yours to
 program: pour into one tech, or spread across all three?
 
+## Persistent memory
+
+`decide` is called fresh each tick, but your module's **linear memory persists
+between ticks** — anything you keep in a `static`/global buffer is still there
+next tick. That's your scratch state (Screeps' `Memory`): remember a target, a
+mode, a tick counter, a map of where the good ore is.
+
+```rust
+static mut MODE: i32 = 0;          // survives across ticks
+
+#[no_mangle]
+pub extern "C" fn decide(/* … */) -> i32 {
+    unsafe {
+        MODE = (MODE + 1) % 3;     // evolves tick to tick
+        // … branch on MODE …
+    }
+    4
+}
+```
+
+It also survives a **freeze/thaw** — a deploy or a stop/resume re-instantiates
+your module, and the engine restores the first 64 KB of your linear memory (a
+hard cap), so your state carries across and replays stay bit-identical. Two
+caveats:
+
+- Persistence across freeze/thaw needs your module to **export its memory**.
+  Rust (`cdylib`) and AssemblyScript (`--runtime stub`) do by default; for
+  Zig / C / TinyGo you may need an `--export-memory` linker flag (live
+  tick-to-tick memory works regardless).
+- It's deterministic and untrusted: keep state in linear memory, not in
+  mutable wasm globals (those aren't snapshotted), and never assume it's
+  larger than 64 KB.
+
 ## Running your bot
 
 There are two surfaces, and the right path depends on which you're using.

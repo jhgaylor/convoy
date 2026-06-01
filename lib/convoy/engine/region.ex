@@ -36,8 +36,9 @@ defmodule Convoy.Engine.Region do
 
   @default_tick_ms 400
   @snapshot_every 50
-  # Bumped to 3: world shape changed for the Forge (scores → per-player bases).
-  @snapshot_version 3
+  # Bumped to 4: snapshots now also carry each player's wasm linear memory
+  # (player Memory, primer §8). v3 = the Forge bases shape.
+  @snapshot_version 4
 
   defmodule State do
     @moduledoc false
@@ -359,8 +360,15 @@ defmodule Convoy.Engine.Region do
     }
 
     case compile_program(backend, exec) do
-      {:ok, runnable} -> Map.merge(base, runnable)
-      {:error, msg} -> %{base | compile_error: msg}
+      {:ok, runnable} ->
+        merged = Map.merge(base, runnable)
+        # Restore the bot's persisted Memory (primer §8) into the fresh instance,
+        # so its scratch state survives the freeze/thaw (deploy, stop/resume).
+        Wasm.restore_memory(merged.wasm, persisted[:memory])
+        merged
+
+      {:error, msg} ->
+        %{base | compile_error: msg}
     end
   end
 
@@ -387,7 +395,15 @@ defmodule Convoy.Engine.Region do
     # Persist only the serializable bits of each player (not the live wasm pid).
     players =
       Map.new(state.players, fn {pid, p} ->
-        {pid, %{backend: p.backend, exec: p.exec, source: p.source}}
+        # Capture the bot's linear memory so its persistent state (primer §8)
+        # survives a freeze/thaw, not just live ticks.
+        %{
+          backend: p.backend,
+          exec: p.exec,
+          source: p.source,
+          memory: Wasm.snapshot_memory(p.wasm)
+        }
+        |> then(&{pid, &1})
       end)
 
     %{

@@ -114,6 +114,7 @@ the doc explains why; use AssemblyScript for a scripting feel).
 | **Ops/overview**: every running sim + utilization, stop/delete/kick | `ConvoyWeb.AdminLive` (`/admin`) + `Engine.list_regions/0`, `region_stats/1`, `stop_region/1`, `delete_region/1`, `kick_player/2` |
 | **Route a session to its region** (§9) | `ConvoyWeb.SimLive` (spectator) subscribes over PubSub; submits go through `Convoy.Loader` → `Engine.submit_player/5` |
 | **The Forge** (§1): refine harvested ore, climb a rate-based tech ladder | each player has a `base` (`World.bases`): `unload` stocks raw ore, `Sim` refines it to goods each tick (`World.refine_all/1`), and `build` intents (codes 20/21/22) spend goods on **refine / cargo / fuel** tech |
+| **Player Memory** (§8): persistent scratch state between ticks | the wasm instance is reused across ticks, so a bot's linear memory persists live; `Wasm.snapshot_memory/1` + `restore_memory/2` serialize a capped page with the region so it survives freeze/thaw (bit-identical replay) |
 
 ## Persistence (surviving deploys)
 
@@ -242,7 +243,6 @@ persisted snapshot, so a shared game survives deploys.
 - More of the Forge: spending tech reaching deeper (e.g. a fleet upgrade), and
   goods feeding the convoy economy.
 - OS-level sandbox around both the WASM runner *and* the compile service (§7, §10).
-- Persistent player "Memory" between ticks (§8) and per-player module storage.
 
 ## Tests
 

@@ -200,6 +200,70 @@ defmodule Convoy.Engine.Wasm do
     end
   end
 
+  # --- player Memory (primer §8) ---
+  #
+  # A player's wasm instance is reused across ticks (the Region holds it), so a
+  # bot's persistent scratch state — anything it keeps in its module's *linear
+  # memory* (a `static`/global buffer) — survives tick-to-tick for free. The one
+  # gap is freeze/thaw: a snapshot re-instantiates a fresh module, which would
+  # zero that memory. These two functions close it — we serialize a capped slice
+  # of linear memory with the region and write it back on resume — so a bot's
+  # memory survives a deploy or stop/resume, and replays stay bit-identical
+  # across the freeze (§11). Capped hard, treated as opaque untrusted bytes.
+
+  # Hard cap on persisted memory: one wasm page. A bot can use more memory live,
+  # but only the first page survives a freeze (primer §8: "cap its size hard").
+  @mem_cap 64 * 1024
+
+  @doc """
+  Read up to one page of a module's linear memory for persistence. Returns the
+  bytes, or `nil` if the module exports no memory (then it just has no
+  freeze/thaw persistence — it still keeps memory live within a region).
+  """
+  @spec snapshot_memory(instance() | nil) :: binary() | nil
+  def snapshot_memory(%{pid: pid, store: store}) do
+    case Wasmex.memory(pid) do
+      {:ok, mem} ->
+        len = min(Wasmex.Memory.size(store, mem), @mem_cap)
+
+        case Wasmex.Memory.read_binary(store, mem, 0, len) do
+          bin when is_binary(bin) -> bin
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  def snapshot_memory(_), do: nil
+
+  @doc """
+  Write previously-snapshotted bytes back into a freshly re-instantiated
+  module's linear memory, restoring a bot's persistent state across a
+  freeze/thaw. No-op if there's nothing to restore or the module has no memory.
+  """
+  @spec restore_memory(instance() | nil, binary() | nil) :: :ok
+  def restore_memory(%{pid: pid, store: store}, bin)
+      when is_binary(bin) and byte_size(bin) > 0 do
+    case Wasmex.memory(pid) do
+      {:ok, mem} ->
+        if Wasmex.Memory.size(store, mem) >= byte_size(bin),
+          do: Wasmex.Memory.write_binary(store, mem, 0, bin)
+
+        :ok
+
+      _ ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  def restore_memory(_inst, _bin), do: :ok
+
   # --- host → guest view ---
 
   defp build_view(entity, world) do

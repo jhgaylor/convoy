@@ -171,6 +171,49 @@ defmodule Convoy.WasmTest do
     Wasm.stop(inst)
   end
 
+  # --- player Memory (primer §8) ---
+
+  # A module that bumps a counter at mem[0] every call and exports its memory.
+  @counter """
+  (module
+    (memory (export "memory") 1)
+    (func (export "decide") #{@abi}
+      (i32.store (i32.const 0) (i32.add (i32.load (i32.const 0)) (i32.const 1)))
+      (i32.const 1)))
+  """
+
+  test "linear memory persists across calls and round-trips through snapshot/restore" do
+    world = World.generate(seed: 1) |> World.add_player("p1")
+    e = %{id: 1, x: 0, y: 0, cargo: 0, cargo_max: 5, owner: "p1", last_action: :idle}
+
+    {:ok, a} = Wasm.instantiate(@counter)
+    for _ <- 1..3, do: Wasm.decide(a, e, world, 50_000)
+
+    bin = Wasm.snapshot_memory(a)
+    assert is_binary(bin)
+    # wasm i32.store is little-endian; the counter sits at offset 0.
+    <<count::little-32, _rest::binary>> = bin
+    assert count == 3
+
+    # Restore into a *fresh* instance (the freeze/thaw path) — state continues.
+    {:ok, b} = Wasm.instantiate(@counter)
+    :ok = Wasm.restore_memory(b, bin)
+    Wasm.decide(b, e, world, 50_000)
+    <<count2::little-32, _::binary>> = Wasm.snapshot_memory(b)
+    assert count2 == 4
+
+    Wasm.stop(a)
+    Wasm.stop(b)
+  end
+
+  test "memory snapshot/restore degrades gracefully when a module exports no memory" do
+    {:ok, inst} = Wasm.instantiate(Convoy.Bots.wat_idle())
+    assert Wasm.snapshot_memory(inst) == nil
+    # restoring into a memory-less module is a safe no-op, never a crash.
+    assert Wasm.restore_memory(inst, <<1, 2, 3, 4>>) == :ok
+    Wasm.stop(inst)
+  end
+
   # WASM runs through the same authoritative Sim, so the anti-cheat / replay
   # guarantees still hold: two runs of the same module are bit-identical.
   test "the wasm-driven sim is deterministic across runs" do
