@@ -18,6 +18,8 @@ defmodule ConvoyWeb.Router do
     pipe_through :browser
 
     live "/", SimLive, :index
+    # Forge & Convoy v2 — the colony model (program one brain, watch a base grow).
+    live "/colony", ColonyLive, :index
     # World overview / admin. Put behind auth before exposing publicly.
     live "/admin", AdminLive, :index
   end

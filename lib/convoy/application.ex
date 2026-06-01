@@ -14,6 +14,9 @@ defmodule Convoy.Application do
       # Region registry + dynamic supervisor: regions are started on demand
       # and located by id (primer §10 region registry / scale-to-zero).
       {Registry, keys: :unique, name: Convoy.Engine.RegionRegistry},
+      # Separate registry for v2 colony regions so the v1 enumeration
+      # (Engine.list_regions / admin :stats polling) never touches them.
+      {Registry, keys: :unique, name: Convoy.Engine.ColonyRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Convoy.Engine.RegionSupervisor},
       # WASM instances live here, not linked to their region: a module that
       # crashes on instantiation (e.g. a memory-bomb rejected by StoreLimits)
