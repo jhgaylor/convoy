@@ -59,6 +59,17 @@ defmodule Convoy.Examples do
       tagline: "Convoy hunter (PvP)",
       blurb:
         "Plays for the ambush, not the sale. Runs a lean economy and steers its convoys to hunt — predicting where rivals will step and intercepting to seize their shipments on the contested market. Banks little itself; wins by taking everyone else's. Watch out for escorts. Not running by default — field it to start a brawl."
+    },
+    %{
+      id: "escort",
+      name: "Escort",
+      file: "escort.rs",
+      lang: :rust,
+      ext: "rs",
+      seeded?: false,
+      tagline: "Raider counter (PvP)",
+      blurb:
+        "The answer to the Raider. Runs a real shipping economy, but flips each convoy to DEFEND the instant a hunter is about to intercept — defend beats hunt, so the raid is dodged and the hunter's haul is seized. Immune to theft and out-ships a bot that lives on it. Field it against a Raider and watch the ambush backfire."
     }
   ]
 
