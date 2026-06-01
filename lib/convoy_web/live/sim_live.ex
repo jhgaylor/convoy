@@ -9,7 +9,7 @@ defmodule ConvoyWeb.SimLive do
   """
   use ConvoyWeb, :live_view
 
-  alias Convoy.{Engine, Loader, Compile}
+  alias Convoy.{Engine, Loader, Compile, Version}
   alias Convoy.Engine.{World, Wasm}
 
   @speeds [{"0.5x", 800}, {"1x", 400}, {"2x", 200}, {"4x", 100}]
@@ -248,6 +248,23 @@ defmodule ConvoyWeb.SimLive do
             <.link navigate={~p"/admin"} class="ml-2 text-xs font-normal text-sky-400 hover:underline">
               overview
             </.link>
+            <.link
+              :if={url = Version.commit_url()}
+              href={url}
+              target="_blank"
+              rel="noopener"
+              class="ml-2 text-xs font-normal font-mono text-slate-600 hover:text-slate-400"
+              title="running build — open this commit on GitHub"
+            >
+              v{Version.app_version()}<span :if={s = Version.short_sha()}> · {s}</span>
+            </.link>
+            <span
+              :if={is_nil(Version.commit_url())}
+              class="ml-2 text-xs font-normal font-mono text-slate-600"
+              title="running build"
+            >
+              v{Version.app_version()}
+            </span>
           </h1>
           <p class="text-xs text-slate-500 mt-0.5">
             Write a bot in your language, send it to the server, and watch every player's harvesters compete.

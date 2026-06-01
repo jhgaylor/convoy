@@ -88,6 +88,11 @@ RUN chown nobody /app
 # set runner ENV
 ENV MIX_ENV="prod"
 
+# Build identity, passed by CI as the commit SHA so the UI can show the running
+# version (there is no .git in the release image to derive it at runtime).
+ARG GIT_SHA=""
+ENV CONVOY_VERSION=${GIT_SHA}
+
 # Only copy the final release from the build stage
 COPY --from=builder --chown=nobody:root /app/_build/${MIX_ENV}/rel/convoy ./
 
