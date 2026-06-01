@@ -262,11 +262,22 @@ fn colony_logic(out: &mut Out) {
         }
     }
 
-    // THE RAID: steer our convoys to INTERCEPT rivals. The market array carries
-    // every convoy in transit with an owner flag (0 = ours, 1 = a rival). Rivals
-    // advance greedily toward the market at (W-1, H-1), so we predict the cell a
-    // rival steps into next and HUNT onto it — landing on a passive shipment
-    // seizes its cargo. (A naive tail-chase just trails a moving target forever.)
+    // THE RAID: forward-only interception that ALWAYS banks. The market array
+    // carries every convoy in transit with an owner flag (0 = ours, 1 = a rival).
+    // Rivals advance greedily toward the market at (W-1, H-1), so we predict the
+    // cell a rival steps into next and HUNT onto it — landing on a passive
+    // shipment seizes its cargo.
+    //
+    // Two rules keep a raider that knows the stance triangle from beating itself:
+    //   1. Carrying plunder (cargo above a fresh shipment) → beeline to market and
+    //      sell. Don't gamble a full hold on another chase.
+    //   2. Only hunt a target whose intercept point is no farther from the market
+    //      than we already are — a FORWARD interception. A whiffed forward hunt
+    //      still drifts us toward the sell point, so we bank our own shipment even
+    //      when we catch nothing. (The old "chase the nearest rival anywhere" loop
+    //      would orbit an uncatchable target forever and bank zero — exactly how a
+    //      defender that just holds and waits shuts a naive raider out completely.)
+    const BASE_SHIPMENT: u32 = 30; // host shipment_value — a fresh convoy's cargo
     let market_x = rd_u16(H_WIDTH).saturating_sub(1);
     let market_y = rd_u16(H_HEIGHT).saturating_sub(1);
     for c in 0..n_mkt {
@@ -277,11 +288,19 @@ fn colony_logic(out: &mut Out) {
         let id = rd_u32(o);
         let cx = rd_u8(o + 5);
         let cy = rd_u8(o + 6);
+        let cargo = rd_u16(o + 7);
 
-        // nearest rival convoy (and where it is)
-        let mut nearest = u32::MAX;
-        let mut ex = 0;
-        let mut ey = 0;
+        // Rule 1: secured plunder rides home. Emit nothing → advance → sell.
+        if cargo > BASE_SHIPMENT {
+            continue;
+        }
+
+        let my_dist = manhattan(cx, cy, market_x, market_y);
+
+        // Rule 2: nearest rival whose PREDICTED next cell is a forward intercept.
+        let mut best = u32::MAX;
+        let mut aim_x = 0;
+        let mut aim_y = 0;
         let mut found = false;
         for e in 0..n_mkt {
             let p = mkt + e * MKT_SZ;
@@ -290,30 +309,39 @@ fn colony_logic(out: &mut Out) {
             }
             let rx = rd_u8(p + 5);
             let ry = rd_u8(p + 6);
-            let d = manhattan(cx, cy, rx, ry);
-            if d < nearest {
-                nearest = d;
-                ex = rx;
-                ey = ry;
+            // where the rival steps next (one greedy step toward market)
+            let (rdx, rdy) = step_toward(rx, ry, market_x, market_y);
+            let px = (rx as i32 + rdx).max(0) as u32;
+            let py = (ry as i32 + rdy).max(0) as u32;
+            if manhattan(px, py, market_x, market_y) > my_dist {
+                continue; // intercept is behind us — never chase backward
+            }
+            let d = manhattan(cx, cy, px, py);
+            if d < best {
+                best = d;
+                aim_x = px;
+                aim_y = py;
                 found = true;
             }
         }
 
-        if !found {
-            continue; // no rival in play — auto-advance (emit nothing), bank this one
+        if found {
+            let (dx, dy) = step_toward(cx, cy, aim_x, aim_y);
+            // A (0,0) steer would auto-home onto the nearest enemy — i.e. walk
+            // straight onto a co-located convoy. That's a free seize against a
+            // passive target but suicide into a defender's cell, and we can't tell
+            // which from the view. Never gamble it: if we're already on the
+            // intercept cell, just advance and sell instead.
+            if dx != 0 || dy != 0 {
+                out.push(OP_HUNT, id, dx, dy);
+            }
         }
-
-        // aim at the rival's PREDICTED next cell (one greedy step toward market),
-        // then steer one step toward that intercept point.
-        let (rdx, rdy) = step_toward(ex, ey, market_x, market_y);
-        let aim_x = (ex as i32 + rdx).max(0) as u32;
-        let aim_y = (ey as i32 + rdy).max(0) as u32;
-        let (dx, dy) = step_toward(cx, cy, aim_x, aim_y);
-        out.push(OP_HUNT, id, dx, dy);
+        // else: no forward target — emit nothing → advance to market and sell.
     }
 
-    // Economy: lean. One refinery, then launch hard — convoys are the hunters,
-    // so flood the board with them rather than stacking throughput.
+    // Economy: grow the harvester fleet early (the 20-39 goods band before a
+    // refinery is otherwise idle), stand up one refinery, then launch hard —
+    // convoys are the hunters, so keep the board full of them.
     if goods >= 40 && refineries < 1 && !refinery_building {
         let (px, py) = (spawner_x + 1, spawner_y);
         out.push(OP_BUILD, 0, BLD_REFINERY as i32, ((px << 8) | py) as i32);

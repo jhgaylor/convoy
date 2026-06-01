@@ -60,8 +60,8 @@ defmodule Convoy.Engine.Colony.World do
     # window without ever permanently starving a colony in the persistent world.
     resource_nodes: 6,
     resource_amount: 40,
-    replenish_interval: 30,
-    replenish_target: 4
+    replenish_interval: 18,
+    replenish_target: 6
   }
 
   defstruct seed: 1,
