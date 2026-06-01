@@ -247,7 +247,11 @@ persisted snapshot, so a shared game survives deploys.
   slowly rather than computing a closed-form jump. The Forge's refining is
   rate-based (closed-form) so the *production* side is fast-forwardable; the
   black-box bot side is the open problem.
-- OS-level sandbox around both the WASM runner *and* the compile service (§7, §10).
+- OS-level (gVisor/Firecracker) isolation for the WASM *runner* (§7, §10). The
+  compile service is already a separate, egress-denied, non-root, no-token pod;
+  the app pod is hardened the same way; the remaining piece is scheduling the
+  runner onto a gVisor node pool (the commented seam in `k8s/deployment.yaml`).
+  See **[docs/security.md](docs/security.md)** for the full isolation model.
 
 ## Tests
 

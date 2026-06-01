@@ -23,14 +23,37 @@ spec:
       labels:
         app: convoy
     spec:
+      # This pod runs the untrusted WASM tier. Defense in depth around the
+      # in-BEAM isolation (fuel + StoreLimits + WasmSupervisor, primer §7): no
+      # cluster API token, non-root, no extra capabilities, default seccomp. The
+      # OS-level layer the primer ultimately wants (a separate gVisor/Firecracker
+      # node pool for the runner) is documented in docs/security.md; the seam is
+      # the commented runtimeClassName/nodeSelector below.
+      automountServiceAccountToken: false
       # The image runs as `nobody` (uid/gid 65534); fsGroup makes the mounted
       # volume group-writable so snapshots can be written.
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
         fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      # OS-level isolation seam (primer §7/§10): once the cluster has a gVisor
+      # RuntimeClass and a labelled runner node pool, uncomment to schedule the
+      # untrusted WASM tier onto it. Left commented so the app still schedules on
+      # a cluster without them.
+      # runtimeClassName: gvisor
+      # nodeSelector:
+      #   convoy.inevitable.fyi/pool: runner
       containers:
         - name: convoy
           image: ghcr.io/jhgaylor/convoy:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           env:
             - name: PHX_SERVER
               value: "true"
