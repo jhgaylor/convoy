@@ -45,6 +45,7 @@ defmodule ConvoyWeb.ColonyLive do
      |> assign(:upload_error, nil)
      |> assign(:active_tab, :rust)
      |> assign(:show_help, false)
+     |> assign(:show_ref, false)
      |> assign_snapshot(Region.snapshot(id))
      |> allow_upload(:bot, accept: :any, max_entries: 1, max_file_size: 8_000_000)}
   end
@@ -60,6 +61,7 @@ defmodule ConvoyWeb.ColonyLive do
   def handle_event("set_speed", %{"ms" => ms}, s), do: ctl(s, &Region.set_speed(&1, String.to_integer(ms)))
   def handle_event("set_tab", %{"tab" => tab}, socket), do: {:noreply, assign(socket, :active_tab, String.to_existing_atom(tab))}
   def handle_event("toggle_help", _, socket), do: {:noreply, update(socket, :show_help, &(not &1))}
+  def handle_event("toggle_ref", _, socket), do: {:noreply, update(socket, :show_ref, &(not &1))}
   def handle_event("validate_upload", params, socket), do: {:noreply, assign(socket, :upload_player, clean(params["player"], socket.assigns.upload_player))}
 
   def handle_event("upload_bot", params, socket) do
@@ -189,6 +191,7 @@ defmodule ConvoyWeb.ColonyLive do
           <.scoreboard players={@players} my_player={@my_player} />
           <.submit_panel uploads={@uploads} upload_player={@upload_player} upload_error={@upload_error} />
           <.getting_started show_help={@show_help} active_tab={@active_tab} region_id={@region_id} base_url={@base_url} />
+          <.field_guide show_ref={@show_ref} />
           <.legend />
         </section>
       </div>
@@ -389,6 +392,105 @@ defmodule ConvoyWeb.ColonyLive do
           <p class="text-slate-500 mt-1">Full wire format: <code>lib/convoy/engine/colony_abi.ex</code>. Full reference bot: <code>examples/colony.rs</code> (builds refineries, spawns, ships).</p>
         </div>
       </div>
+    </div>
+    """
+  end
+
+  attr :show_ref, :boolean, required: true
+
+  defp field_guide(assigns) do
+    assigns = assign(assigns, cfg: World.default_config())
+
+    ~H"""
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-400">
+      <button type="button" phx-click="toggle_ref" class="w-full flex items-center justify-between text-slate-300 font-semibold">
+        <span>Field guide — buildings, units &amp; actions</span>
+        <span class="text-slate-500">{if @show_ref, do: "▲", else: "▼"}</span>
+      </button>
+      <div :if={@show_ref} class="mt-2 space-y-3">
+        <p class="text-[11px] text-slate-500">
+          The loop: harvesters <span class="text-amber-400">mine ore</span> → a refinery (or the spawner's built-in forge)
+          <span class="text-emerald-300">forges it into goods</span> → spend goods to build, spawn, and
+          <span class="text-yellow-300">load convoys</span> that cross the contested market for <span class="text-yellow-300">credits</span> (the score).
+        </p>
+
+        <div>
+          <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Buildings</div>
+          <div class="space-y-1.5">
+            <.guide_row glyph="🏠" name="Spawner">
+              Your base at (0,0), pre-built. Harvesters spawn here and dump cargo into it. Has a tiny built-in forge
+              (+{@cfg.base_refine_rate} good/tick) so you can bootstrap with no refinery. Sets pop cap
+              ({@cfg.pop_cap_base} base, +{@cfg.pop_cap_step} per level).
+            </.guide_row>
+            <.guide_row glyph="⚙" name="Refinery">
+              Forges ore → goods at {@cfg.refine_rate}/tick each (more with level). Costs {@cfg.build_cost_refinery} goods,
+              {@cfg.build_time_refinery} ticks to build.
+            </.guide_row>
+            <.guide_row glyph="📦" name="Storage">
+              Raises your goods cap by {@cfg.storage_step} (base {@cfg.storage_base}). Costs {@cfg.build_cost_storage} goods,
+              {@cfg.build_time_storage} ticks. Goods over the cap aren't forged.
+            </.guide_row>
+          </div>
+        </div>
+
+        <div>
+          <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Units &amp; convoys</div>
+          <div class="space-y-1.5">
+            <.guide_row glyph="🤖" name="Harvester">
+              Mines ore on its cell (holds {@cfg.cargo_max}), hauls it to an adjacent building. Spawn for
+              {@cfg.spawn_cost_harvester} goods, {@cfg.spawn_time_harvester} ticks. You start with {@cfg.start_units}.
+            </.guide_row>
+            <.guide_row glyph="🚚" name="Convoy">
+              Loaded with {@cfg.shipment_size} goods, worth {@cfg.shipment_value} credits if it reaches the market.
+              Rivals' convoys can seize its cargo en route — the only PvP.
+            </.guide_row>
+          </div>
+        </div>
+
+        <div>
+          <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Actions your <code>tick</code> can emit</div>
+          <div class="space-y-1">
+            <.action_row op="1" sig="harvest(unit)">mine the ore under <code>unit</code> into its cargo</.action_row>
+            <.action_row op="2" sig="move(unit, dx, dy)">step <code>unit</code> (or a convoy) one cell by the sign of dx/dy</.action_row>
+            <.action_row op="3" sig="transfer(unit, building)">dump <code>unit</code>'s cargo into an adjacent built building</.action_row>
+            <.action_row op="4" sig="build(kind, x«8|y)">queue a building at packed coords (spends goods)</.action_row>
+            <.action_row op="5" sig="spawn(kind)">queue a unit at the spawner (spends goods, pop-capped)</.action_row>
+            <.action_row op="7" sig="launch_convoy">load a convoy and send it into the market</.action_row>
+            <.action_row op="8" sig="defend(convoy)">hold position; a defender beats a mover in a capture</.action_row>
+            <.action_row op="9" sig="hunt(convoy)">chase the nearest enemy convoy to seize its cargo</.action_row>
+          </div>
+          <p class="text-[10px] text-slate-500 mt-1.5">
+            <code>kind</code>: buildings 0 spawner · 1 refinery · 2 storage. Units 0 harvester. Op 0 is idle; full wire format in
+            <code>lib/convoy/engine/colony_abi.ex</code>.
+          </p>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  attr :glyph, :string, required: true
+  attr :name, :string, required: true
+  slot :inner_block, required: true
+
+  defp guide_row(assigns) do
+    ~H"""
+    <div class="flex gap-2">
+      <span class="w-4 text-center text-slate-300 shrink-0">{@glyph}</span>
+      <div class="text-[11px] leading-snug"><span class="text-slate-300 font-medium">{@name}</span> — {render_slot(@inner_block)}</div>
+    </div>
+    """
+  end
+
+  attr :op, :string, required: true
+  attr :sig, :string, required: true
+  slot :inner_block, required: true
+
+  defp action_row(assigns) do
+    ~H"""
+    <div class="flex gap-2 text-[11px] leading-snug">
+      <span class="font-mono text-slate-600 w-3 text-right shrink-0">{@op}</span>
+      <div><code class="text-fuchsia-300">{@sig}</code> <span class="text-slate-500">— {render_slot(@inner_block)}</span></div>
     </div>
     """
   end
