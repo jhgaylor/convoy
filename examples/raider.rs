@@ -326,12 +326,21 @@ fn colony_logic(out: &mut Out) {
         }
 
         if found {
-            let (dx, dy) = step_toward(cx, cy, aim_x, aim_y);
-            // A (0,0) steer would auto-home onto the nearest enemy — i.e. walk
-            // straight onto a co-located convoy. That's a free seize against a
-            // passive target but suicide into a defender's cell, and we can't tell
-            // which from the view. Never gamble it: if we're already on the
-            // intercept cell, just advance and sell instead.
+            // Steer toward the intercept on BOTH axes at once. A hunt move applies
+            // sign(dx) AND sign(dy) in the same tick (unlike an advance, which is
+            // single-axis via step_toward) — so a DIAGONAL steer lets us cut off
+            // the greedy lane and sit ADJACENT to the target's predicted cell.
+            // A single-axis step just trails the target down the same line at equal
+            // speed and never closes the gap, so it banks its own shipment but robs
+            // almost nothing; the diagonal cut is what actually lands the seize.
+            // We still aim only at the predicted (vacated) cell, so a defender that
+            // holds is dodged, not walked into — escort-safe, passive-lethal.
+            let dx = (aim_x as i32 - cx as i32).signum();
+            let dy = (aim_y as i32 - cy as i32).signum();
+            // A (0,0) steer would auto-home onto the nearest enemy — straight onto a
+            // co-located convoy: a free seize vs a passive but suicide into a
+            // defender's cell, and the view can't tell them apart. If we're already
+            // on the intercept cell, just advance and sell instead.
             if dx != 0 || dy != 0 {
                 out.push(OP_HUNT, id, dx, dy);
             }
