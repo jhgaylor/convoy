@@ -73,6 +73,25 @@ defmodule Convoy.Engine.Colony.RegionTest do
     end
   end
 
+  test "set_color pins a player's color index, exposed in the snapshot and dropped on kick" do
+    id = fresh_id()
+    Region.ensure(id, seed: 1)
+    Region.pause(id)
+
+    s0 = Region.snapshot(id)
+    assert Map.get(s0, :colors) == %{}
+
+    assert :ok = Region.set_color(id, "demo", 3)
+    assert Region.snapshot(id).colors == %{"demo" => 3}
+
+    # a negative index is rejected, leaving the pinned color untouched
+    assert {:error, :bad_index} = Region.set_color(id, "demo", -1)
+    assert Region.snapshot(id).colors == %{"demo" => 3}
+
+    assert :ok = Region.kick(id, "demo")
+    refute Map.has_key?(Region.snapshot(id).colors, "demo")
+  end
+
   test "a region records a downsampled metrics time-series as it ticks" do
     id = fresh_id()
     Region.ensure(id, seed: 1)

@@ -74,6 +74,9 @@ defmodule Convoy.Engine.Colony.Region do
   @doc "Evict a player: drop their colony, brain, convoys, history, and stop their wasm."
   def kick(id, player), do: call(id, {:kick, clean(player)})
 
+  @doc "Pin a player's display color to a palette index (persisted, shared with all viewers)."
+  def set_color(id, player, index) when is_integer(index), do: call(id, {:set_color, clean(player), index})
+
   @doc "Ids of all live colony regions."
   def list, do: Registry.select(Convoy.Engine.ColonyRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
 
@@ -114,6 +117,7 @@ defmodule Convoy.Engine.Colony.Region do
       seed: Keyword.get(opts, :seed, 1),
       colonies: %{},
       brains: %{},
+      colors: %{},
       market: Market.new(@width, @height),
       status: :running,
       tick: 0,
@@ -165,11 +169,22 @@ defmodule Convoy.Engine.Colony.Region do
       |> update_in([Access.key(:last_fuel)], &Map.delete(&1, player))
       |> update_in([Access.key(:history)], &Map.delete(&1, player))
       |> update_in([Access.key(:market)], &Market.drop_owner(&1, player))
+      |> update_in([Access.key(:colors)], &Map.delete(&1, player))
       |> persist()
 
     broadcast(state)
     {:reply, :ok, state}
   end
+
+  # Pin a player's color to a palette index. The palette lives in the view; the
+  # region just stores a non-negative index the view resolves (modulo) against it.
+  def handle_call({:set_color, player, index}, _from, state) when index >= 0 do
+    state = state |> update_in([Access.key(:colors)], &Map.put(&1, player, index)) |> persist()
+    broadcast(state)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:set_color, _player, _index}, _from, state), do: {:reply, {:error, :bad_index}, state}
 
   @impl true
   def handle_cast(:play, state), do: {:noreply, schedule(%{state | status: :running})}
@@ -353,6 +368,7 @@ defmodule Convoy.Engine.Colony.Region do
           colonies: colonies,
           market: snap.market,
           history: Map.get(snap, :history, %{}),
+          colors: Map.get(snap, :colors, %{}),
           brains: brains
       }
     else
@@ -402,6 +418,7 @@ defmodule Convoy.Engine.Colony.Region do
       colonies: state.colonies,
       market: state.market,
       history: state.history,
+      colors: state.colors,
       players: players
     })
 
@@ -452,6 +469,7 @@ defmodule Convoy.Engine.Colony.Region do
       colonies: state.colonies,
       market: state.market,
       players: players,
+      colors: state.colors,
       history: state.history,
       last_fuel: state.last_fuel |> Map.values() |> Enum.sum()
     }

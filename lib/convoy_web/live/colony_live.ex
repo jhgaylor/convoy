@@ -57,6 +57,7 @@ defmodule ConvoyWeb.ColonyLive do
      |> assign(:examples, Examples.all())
      |> assign(:open_example, nil)
      |> assign(:example_error, nil)
+     |> assign(:color_picker_for, nil)
      |> assign_snapshot(Region.snapshot(id))
      |> allow_upload(:bot, accept: :any, max_entries: 1, max_file_size: 8_000_000)}
   end
@@ -79,6 +80,15 @@ defmodule ConvoyWeb.ColonyLive do
 
   def handle_event("toggle_colony", %{"id" => id}, socket) do
     {:noreply, update(socket, :hidden_colonies, &if(MapSet.member?(&1, id), do: MapSet.delete(&1, id), else: MapSet.put(&1, id)))}
+  end
+
+  def handle_event("pick_color", %{"player" => id}, socket) do
+    {:noreply, update(socket, :color_picker_for, &if(&1 == id, do: nil, else: id))}
+  end
+
+  def handle_event("set_color", %{"player" => id, "idx" => idx}, socket) do
+    Region.set_color(socket.assigns.region_id, id, String.to_integer(idx))
+    {:noreply, assign(socket, :color_picker_for, nil)}
   end
   def handle_event("validate_upload", params, socket), do: {:noreply, assign(socket, :upload_player, clean(params["player"], socket.assigns.upload_player))}
 
@@ -162,6 +172,7 @@ defmodule ConvoyWeb.ColonyLive do
     |> assign(:colonies, snap.colonies)
     |> assign(:market, snap.market)
     |> assign(:players, snap.players)
+    |> assign(:player_colors, build_colors(snap.players, Map.get(snap, :colors, %{})))
     |> assign(:history, Map.get(snap, :history, %{}))
     |> assign(:last_fuel, snap.last_fuel)
   end
@@ -222,16 +233,16 @@ defmodule ConvoyWeb.ColonyLive do
       <div class="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 p-6">
         <section class="space-y-5">
           <.controls status={@status} speeds={@speeds} tick_ms={@tick_ms} />
-          <.market_view market={@market} players={@players} />
+          <.market_view market={@market} players={@players} colors={@player_colors} />
           <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
             <%= for {player, colony} <- Enum.sort_by(@colonies, fn {p, _} -> {-score(@players, p), p} end) do %>
-              <.colony_view player={player} colony={colony} color={color(player)} mine={player == @my_player} />
+              <.colony_view player={player} colony={colony} color={pcolor(@player_colors, player)} mine={player == @my_player} />
             <% end %>
           </div>
         </section>
 
         <section class="space-y-4">
-          <.scoreboard players={@players} my_player={@my_player} />
+          <.scoreboard players={@players} my_player={@my_player} colors={@player_colors} picker_for={@color_picker_for} />
           <.submit_panel uploads={@uploads} upload_player={@upload_player} upload_error={@upload_error} />
           <.example_bots examples={@examples} open_example={@open_example} example_error={@example_error} my_player={@my_player} />
           <.getting_started show_help={@show_help} active_tab={@active_tab} region_id={@region_id} base_url={@base_url} />
@@ -244,6 +255,7 @@ defmodule ConvoyWeb.ColonyLive do
         show={@show_metrics}
         history={@history}
         players={@players}
+        colors={@player_colors}
         frame={@metrics_frame}
         frames={@frames}
         hidden={@hidden_colonies}
@@ -277,6 +289,7 @@ defmodule ConvoyWeb.ColonyLive do
 
   attr :market, Market, required: true
   attr :players, :list, required: true
+  attr :colors, :map, required: true
 
   defp market_view(assigns) do
     ~H"""
@@ -287,7 +300,7 @@ defmodule ConvoyWeb.ColonyLive do
         <span class="text-[10px] text-slate-500">· shared · contested · {length(@market.convoys)} convoy(s) en route</span>
       </div>
       <.grid width={@market.width} height={@market.height} cells={
-        for y <- 0..(@market.height - 1), x <- 0..(@market.width - 1), do: market_cell(@market, {x, y})
+        for y <- 0..(@market.height - 1), x <- 0..(@market.width - 1), do: market_cell(@market, {x, y}, @colors)
       } max="900px" />
       <div :if={@market.events != []} class="mt-2 max-h-24 overflow-y-auto font-mono text-[11px] text-slate-400 space-y-0.5">
         <%= for ev <- @market.events do %><div>{ev}</div><% end %>
@@ -380,6 +393,8 @@ defmodule ConvoyWeb.ColonyLive do
 
   attr :players, :list, required: true
   attr :my_player, :string, default: nil
+  attr :colors, :map, required: true
+  attr :picker_for, :string, default: nil
 
   defp scoreboard(assigns) do
     ~H"""
@@ -393,9 +408,14 @@ defmodule ConvoyWeb.ColonyLive do
       <% end %>
       <div class="space-y-1">
         <%= for p <- @players do %>
-          <% c = color(p.id) %>
-          <div class="flex items-center gap-2 text-sm">
-            <span class={["w-2.5 h-2.5 rounded-full", c.dot]}></span>
+          <% c = pcolor(@colors, p.id) %>
+          <div class="flex items-center gap-2 text-sm relative">
+            <button
+              phx-click="pick_color"
+              phx-value-player={p.id}
+              class={["w-2.5 h-2.5 rounded-full ring-offset-1 ring-offset-slate-900 hover:ring-2 hover:ring-slate-500", c.dot, @picker_for == p.id && "ring-2 ring-slate-400"]}
+              title={"recolor #{p.id}"}
+            ></button>
             <span class={["font-mono text-xs", c.text]}>{p.id}</span>
             <span :if={p.id == @my_player} class="text-[10px] text-fuchsia-400">(you)</span>
             <span :if={p.error} class="text-[10px] text-rose-400" title={p.error}>⛔</span>
@@ -405,6 +425,20 @@ defmodule ConvoyWeb.ColonyLive do
               <span class="text-emerald-300" title="lifetime refined">⚒{p.refined}</span>
               <span class="font-bold text-yellow-300 w-12 text-right" title="lifetime market credits (score)">🏪{p.credits}</span>
             </span>
+            <div
+              :if={@picker_for == p.id}
+              class="absolute left-0 top-5 z-20 flex items-center gap-1.5 bg-slate-800 border border-slate-600 rounded-md p-1.5 shadow-xl"
+            >
+              <%= for {opt, i} <- Enum.with_index(palette()) do %>
+                <button
+                  phx-click="set_color"
+                  phx-value-player={p.id}
+                  phx-value-idx={i}
+                  class={["w-4 h-4 rounded-full hover:scale-125 transition-transform", opt.dot, opt == c && "ring-2 ring-white"]}
+                  title={"color #{i + 1}"}
+                ></button>
+              <% end %>
+            </div>
           </div>
         <% end %>
       </div>
@@ -671,6 +705,7 @@ defmodule ConvoyWeb.ColonyLive do
   attr :show, :boolean, required: true
   attr :history, :map, required: true
   attr :players, :list, required: true
+  attr :colors, :map, required: true
   attr :frame, :any, required: true
   attr :frames, :list, required: true
   attr :hidden, :any, required: true
@@ -696,7 +731,7 @@ defmodule ConvoyWeb.ColonyLive do
           <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div class="flex flex-wrap gap-3 text-xs">
               <%= for p <- @players do %>
-                <% c = color(p.id) %>
+                <% c = pcolor(@colors, p.id) %>
                 <% off = MapSet.member?(@hidden, p.id) %>
                 <button
                   phx-click="toggle_colony"
@@ -726,10 +761,10 @@ defmodule ConvoyWeb.ColonyLive do
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <.metric_chart title="🏪 Credits (score)" key={:credits} history={@history} players={@players} frame={@frame} hidden={@hidden} />
-            <.metric_chart title="⚒ Refined" key={:refined} history={@history} players={@players} frame={@frame} hidden={@hidden} />
-            <.metric_chart title="🤖 Population" key={:pop} history={@history} players={@players} frame={@frame} hidden={@hidden} />
-            <.metric_chart title="🚚 Convoys" key={:convoys} history={@history} players={@players} frame={@frame} hidden={@hidden} />
+            <.metric_chart title="🏪 Credits (score)" key={:credits} history={@history} players={@players} colors={@colors} frame={@frame} hidden={@hidden} />
+            <.metric_chart title="⚒ Refined" key={:refined} history={@history} players={@players} colors={@colors} frame={@frame} hidden={@hidden} />
+            <.metric_chart title="🤖 Population" key={:pop} history={@history} players={@players} colors={@colors} frame={@frame} hidden={@hidden} />
+            <.metric_chart title="🚚 Convoys" key={:convoys} history={@history} players={@players} colors={@colors} frame={@frame} hidden={@hidden} />
           </div>
 
           <p class="text-[11px] text-slate-600 mt-4">Click a colony to hide it; pick a window above (minutes at 1x). Left → right is oldest → now.</p>
@@ -743,6 +778,7 @@ defmodule ConvoyWeb.ColonyLive do
   attr :key, :atom, required: true
   attr :history, :map, required: true
   attr :players, :list, required: true
+  attr :colors, :map, required: true
   attr :frame, :any, required: true
   attr :hidden, :any, required: true
 
@@ -766,7 +802,7 @@ defmodule ConvoyWeb.ColonyLive do
           <polyline
             points={polyline(series_points(@history, p.id, @frame), @key, @maxv)}
             fill="none"
-            stroke={color(p.id).stroke}
+            stroke={pcolor(@colors, p.id).stroke}
             stroke-width="1.5"
             stroke-linejoin="round"
             vector-effect="non-scaling-stroke"
@@ -838,14 +874,14 @@ defmodule ConvoyWeb.ColonyLive do
     end
   end
 
-  defp market_cell(market, {x, y} = pos) do
+  defp market_cell(market, {x, y} = pos, colors) do
     here = Enum.filter(market.convoys, &(&1.x == x and &1.y == y))
 
     cond do
       here != [] ->
         lead = Enum.min_by(here, & &1.id)
         owners = here |> Enum.map(& &1.owner) |> Enum.uniq()
-        %{glyph: "🚚", bg: color(lead.owner).cell, title: "#{Enum.join(owners, ",")} @ #{x},#{y}"}
+        %{glyph: "🚚", bg: pcolor(colors, lead.owner).cell, title: "#{Enum.join(owners, ",")} @ #{x},#{y}"}
 
       pos == market.market -> %{glyph: "🏪", bg: "bg-yellow-800", title: "market @ #{x},#{y}"}
       pos == market.entry -> %{glyph: "🚪", bg: "bg-slate-700", title: "convoy entry @ #{x},#{y}"}
@@ -875,8 +911,32 @@ defmodule ConvoyWeb.ColonyLive do
     %{dot: "bg-fuchsia-400", text: "text-fuchsia-300", cell: "bg-fuchsia-600", stroke: "#e879f9"},
     %{dot: "bg-amber-400", text: "text-amber-300", cell: "bg-amber-600", stroke: "#fbbf24"},
     %{dot: "bg-rose-400", text: "text-rose-300", cell: "bg-rose-600", stroke: "#fb7185"},
-    %{dot: "bg-cyan-400", text: "text-cyan-300", cell: "bg-cyan-600", stroke: "#22d3ee"}
+    %{dot: "bg-cyan-400", text: "text-cyan-300", cell: "bg-cyan-600", stroke: "#22d3ee"},
+    %{dot: "bg-violet-400", text: "text-violet-300", cell: "bg-violet-600", stroke: "#a78bfa"},
+    %{dot: "bg-orange-400", text: "text-orange-300", cell: "bg-orange-600", stroke: "#fb923c"},
+    %{dot: "bg-lime-400", text: "text-lime-300", cell: "bg-lime-600", stroke: "#a3e635"},
+    %{dot: "bg-teal-400", text: "text-teal-300", cell: "bg-teal-600", stroke: "#2dd4bf"}
   ]
+
+  defp palette, do: @palette
+
+  # Resolve every live player to a DISTINCT palette entry: assign by stable rank
+  # (sorted id → palette slot) so the first N players never collide, then apply any
+  # explicit per-player override (a palette index pinned via the region). Replaces
+  # the old independent per-id hash, which collided readily (the "3 red players").
+  defp build_colors(players, overrides) do
+    players
+    |> Enum.map(& &1.id)
+    |> Enum.sort()
+    |> Enum.with_index()
+    |> Map.new(fn {id, rank} ->
+      {id, Enum.at(@palette, rem(Map.get(overrides, id, rank), length(@palette)))}
+    end)
+  end
+
+  # Look up a resolved color, falling back to the legacy hash for ids not in the
+  # map (e.g. a convoy owner not currently in the players list).
+  defp pcolor(colors, id), do: Map.get(colors, id) || color(id)
 
   defp color(player_id), do: Enum.at(@palette, rem(:erlang.phash2(player_id), length(@palette)))
 end
