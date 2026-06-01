@@ -52,6 +52,10 @@ COPY priv priv
 
 COPY lib lib
 
+# Bundled example bot sources are embedded at compile time (Convoy.Examples uses
+# @external_resource + File.read!), so they must be present before `mix compile`.
+COPY examples examples
+
 # Compile the release
 RUN mix compile
 
