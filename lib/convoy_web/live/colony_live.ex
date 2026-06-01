@@ -13,6 +13,10 @@ defmodule ConvoyWeb.ColonyLive do
 
   @speeds [{"0.5x", 800}, {"1x", 400}, {"2x", 200}, {"4x", 100}]
 
+  # Metrics-modal time windows: {label, span in ticks} (minutes at the 1x 400ms
+  # speed → ticks = minutes × 150). :all shows the full retained history.
+  @frames [{"5m", 750}, {"15m", 2250}, {"30m", 4500}, {"all", :all}]
+
   # Languages for the getting-started panel: {id, label, file ext, lang param}.
   @langs [
     {:rust, "Rust", "rs", "rust"},
@@ -47,6 +51,9 @@ defmodule ConvoyWeb.ColonyLive do
      |> assign(:show_help, false)
      |> assign(:show_ref, false)
      |> assign(:show_metrics, false)
+     |> assign(:frames, @frames)
+     |> assign(:metrics_frame, :all)
+     |> assign(:hidden_colonies, MapSet.new())
      |> assign(:examples, Examples.all())
      |> assign(:open_example, nil)
      |> assign(:example_error, nil)
@@ -67,6 +74,12 @@ defmodule ConvoyWeb.ColonyLive do
   def handle_event("toggle_help", _, socket), do: {:noreply, update(socket, :show_help, &(not &1))}
   def handle_event("toggle_ref", _, socket), do: {:noreply, update(socket, :show_ref, &(not &1))}
   def handle_event("toggle_metrics", _, socket), do: {:noreply, update(socket, :show_metrics, &(not &1))}
+  def handle_event("set_frame", %{"ticks" => "all"}, socket), do: {:noreply, assign(socket, :metrics_frame, :all)}
+  def handle_event("set_frame", %{"ticks" => t}, socket), do: {:noreply, assign(socket, :metrics_frame, String.to_integer(t))}
+
+  def handle_event("toggle_colony", %{"id" => id}, socket) do
+    {:noreply, update(socket, :hidden_colonies, &if(MapSet.member?(&1, id), do: MapSet.delete(&1, id), else: MapSet.put(&1, id)))}
+  end
   def handle_event("validate_upload", params, socket), do: {:noreply, assign(socket, :upload_player, clean(params["player"], socket.assigns.upload_player))}
 
   def handle_event("toggle_example", %{"id" => id}, socket) do
@@ -227,7 +240,14 @@ defmodule ConvoyWeb.ColonyLive do
         </section>
       </div>
 
-      <.metrics_modal show={@show_metrics} history={@history} players={@players} />
+      <.metrics_modal
+        show={@show_metrics}
+        history={@history}
+        players={@players}
+        frame={@metrics_frame}
+        frames={@frames}
+        hidden={@hidden_colonies}
+      />
     </div>
     """
   end
@@ -651,6 +671,9 @@ defmodule ConvoyWeb.ColonyLive do
   attr :show, :boolean, required: true
   attr :history, :map, required: true
   attr :players, :list, required: true
+  attr :frame, :any, required: true
+  attr :frames, :list, required: true
+  attr :hidden, :any, required: true
 
   defp metrics_modal(assigns) do
     ~H"""
@@ -670,24 +693,46 @@ defmodule ConvoyWeb.ColonyLive do
         <%= if @players == [] or not Enum.any?(@players, &Map.has_key?(@history, &1.id)) do %>
           <div class="text-sm text-slate-500">No history yet — let the sim run a few ticks, then reopen.</div>
         <% else %>
-          <div class="flex flex-wrap gap-3 mb-4 text-xs">
-            <%= for p <- @players do %>
-              <% c = color(p.id) %>
-              <span class="flex items-center gap-1.5">
-                <span class={["w-2.5 h-2.5 rounded-full", c.dot]}></span>
-                <span class={["font-mono", c.text]}>{p.id}</span>
-              </span>
-            <% end %>
+          <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div class="flex flex-wrap gap-3 text-xs">
+              <%= for p <- @players do %>
+                <% c = color(p.id) %>
+                <% off = MapSet.member?(@hidden, p.id) %>
+                <button
+                  phx-click="toggle_colony"
+                  phx-value-id={p.id}
+                  class={["flex items-center gap-1.5 hover:opacity-100", off && "opacity-40"]}
+                  title={"#{if off, do: "show", else: "hide"} #{p.id}"}
+                >
+                  <span class={["w-2.5 h-2.5 rounded-full", c.dot]}></span>
+                  <span class={["font-mono", c.text, off && "line-through"]}>{p.id}</span>
+                </button>
+              <% end %>
+            </div>
+            <div class="flex items-center gap-1 text-xs">
+              <span class="text-slate-500 mr-1">window</span>
+              <%= for {label, val} <- @frames do %>
+                <button
+                  phx-click="set_frame"
+                  phx-value-ticks={frame_param(val)}
+                  class={[
+                    "px-2 py-0.5 rounded font-mono",
+                    @frame == val && "bg-sky-500 text-slate-950 font-semibold",
+                    @frame != val && "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                  ]}
+                >{label}</button>
+              <% end %>
+            </div>
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <.metric_chart title="🏪 Credits (score)" key={:credits} history={@history} players={@players} />
-            <.metric_chart title="⚒ Refined" key={:refined} history={@history} players={@players} />
-            <.metric_chart title="🤖 Population" key={:pop} history={@history} players={@players} />
-            <.metric_chart title="🚚 Convoys" key={:convoys} history={@history} players={@players} />
+            <.metric_chart title="🏪 Credits (score)" key={:credits} history={@history} players={@players} frame={@frame} hidden={@hidden} />
+            <.metric_chart title="⚒ Refined" key={:refined} history={@history} players={@players} frame={@frame} hidden={@hidden} />
+            <.metric_chart title="🤖 Population" key={:pop} history={@history} players={@players} frame={@frame} hidden={@hidden} />
+            <.metric_chart title="🚚 Convoys" key={:convoys} history={@history} players={@players} frame={@frame} hidden={@hidden} />
           </div>
 
-          <p class="text-[11px] text-slate-600 mt-4">Sampled periodically as the sim runs; left → right is oldest → now. Each line is a colony.</p>
+          <p class="text-[11px] text-slate-600 mt-4">Click a colony to hide it; pick a window above (minutes at 1x). Left → right is oldest → now.</p>
         <% end %>
       </div>
     </div>
@@ -698,9 +743,16 @@ defmodule ConvoyWeb.ColonyLive do
   attr :key, :atom, required: true
   attr :history, :map, required: true
   attr :players, :list, required: true
+  attr :frame, :any, required: true
+  attr :hidden, :any, required: true
 
   defp metric_chart(assigns) do
-    assigns = assign(assigns, :maxv, chart_max(assigns.history, assigns.players, assigns.key))
+    visible = Enum.reject(assigns.players, &MapSet.member?(assigns.hidden, &1.id))
+
+    assigns =
+      assigns
+      |> assign(:visible, visible)
+      |> assign(:maxv, chart_max(assigns.history, visible, assigns.key, assigns.frame))
 
     ~H"""
     <div class="bg-slate-950 border border-slate-800 rounded-lg p-3">
@@ -710,9 +762,9 @@ defmodule ConvoyWeb.ColonyLive do
       </div>
       <svg viewBox="0 0 300 80" preserveAspectRatio="none" class="w-full h-24">
         <line x1="0" y1="80" x2="300" y2="80" stroke="#1e293b" stroke-width="1" />
-        <%= for p <- @players do %>
+        <%= for p <- @visible do %>
           <polyline
-            points={polyline(series_points(@history, p.id), @key, @maxv)}
+            points={polyline(series_points(@history, p.id, @frame), @key, @maxv)}
             fill="none"
             stroke={color(p.id).stroke}
             stroke-width="1.5"
@@ -725,16 +777,26 @@ defmodule ConvoyWeb.ColonyLive do
     """
   end
 
-  # history is stored newest-first; reverse to plot oldest → newest, left → right.
-  defp series_points(history, pid), do: history |> Map.get(pid, []) |> Enum.reverse()
+  # history is stored newest-first; clip to the window, then reverse to plot
+  # oldest → newest, left → right.
+  defp series_points(history, pid, frame), do: history |> Map.get(pid, []) |> window(frame) |> Enum.reverse()
 
-  defp chart_max(history, players, key) do
-    players
-    |> Enum.flat_map(fn p -> Map.get(history, p.id, []) end)
+  # Keep only the points within `ticks` of the latest sample (list is newest-first,
+  # so t is descending and take_while stops at the window edge).
+  defp window(points, :all), do: points
+  defp window([], _ticks), do: []
+  defp window([latest | _] = points, ticks), do: Enum.take_while(points, &(latest.t - &1.t <= ticks))
+
+  defp chart_max(history, visible, key, frame) do
+    visible
+    |> Enum.flat_map(fn p -> history |> Map.get(p.id, []) |> window(frame) end)
     |> Enum.map(&Map.get(&1, key, 0))
     |> Enum.max(fn -> 0 end)
     |> max(1)
   end
+
+  defp frame_param(:all), do: "all"
+  defp frame_param(ticks), do: Integer.to_string(ticks)
 
   defp polyline([], _key, _maxv), do: ""
 
