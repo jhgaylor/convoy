@@ -1,75 +1,89 @@
 defmodule ConvoyWeb.SimLive do
   @moduledoc """
-  The playable surface for Forge & Convoy v1.
+  The spectator surface for Forge & Convoy.
 
-  You write a behaviour program (left), press Run, and watch your harvester
-  agents execute it against the deterministic region simulation (right). The
-  LiveView owns no world state — it subscribes to the region process over
-  PubSub and sends it commands, exactly the "route a session to the process
-  owning the region" model from primer §9.
+  This page *watches* a shared region — it owns no world state, just subscribes
+  to the region process over PubSub (primer §9). You don't write code here; you
+  submit a bot from outside (curl a file, `mix convoy.run`, the API, or the file
+  upload below) and watch every player's harvesters compete on the grid.
   """
   use ConvoyWeb, :live_view
 
-  alias Convoy.{Engine, Compile, Loader}
+  alias Convoy.{Engine, Loader, Compile}
   alias Convoy.Engine.{World, Program, Wasm}
 
   @speeds [{"0.5x", 800}, {"1x", 400}, {"2x", 200}, {"4x", 100}]
 
-  # Full editor menu. `:rules` and `:wat` need no toolchain; `:assemblyscript`,
-  # `:rust`, `:tinygo` compile via Convoy.Compile; `:upload` takes a .wasm file.
-  @languages [
-    {:rules, "Rules DSL"},
-    {:wat, "WAT"},
-    {:assemblyscript, "AssemblyScript"},
-    {:rust, "Rust"},
-    {:tinygo, "TinyGo"},
-    {:upload, "Upload .wasm"}
-  ]
-
-  defp template_for(:rules), do: Program.default_source()
-  defp template_for(:wat), do: Wasm.default_source()
-  defp template_for(:upload), do: ""
-  defp template_for(lang), do: Compile.template(lang)
+  # Source-file extensions we accept (browser upload + language inference).
+  @ext_lang %{
+    ".rs" => :rust,
+    ".go" => :tinygo,
+    ".ts" => :assemblyscript,
+    ".wat" => :wat,
+    ".rules" => :rules,
+    ".dsl" => :rules,
+    ".wasm" => :wasm
+  }
 
   @impl true
   def mount(params, _session, socket) do
-    # Every region is a durable, shared world. `/` watches "main"; `?region=NAME`
-    # watches another. The browser is a spectator — it never auto-creates a
-    # player. You join only by submitting code (Run here, or `mix convoy.run`).
+    # Every region is a durable, shared world. `/` watches "main";
+    # `?region=NAME` watches another. The browser never auto-joins.
     id = region_id(params)
-    seed = 1
-    Engine.ensure_region(id, seed: seed, persist: true)
+    Engine.ensure_region(id, seed: 1, persist: true)
 
     if connected?(socket), do: Phoenix.PubSub.subscribe(Convoy.PubSub, Engine.topic(id))
-
-    snap = Engine.snapshot(id)
 
     {:ok,
      socket
      |> assign(:region_id, id)
-     |> assign(:seed, seed)
+     |> assign(:base_url, ConvoyWeb.Endpoint.url())
+     |> assign(:seed, 1)
      |> assign(:speeds, @speeds)
-     |> assign(:languages, @languages)
-     |> assign(:language, :rules)
-     # The player name this tab submits as; not joined until first Run.
-     |> assign(:player_draft, "p1")
+     |> assign(:tabs, language_tabs())
+     |> assign(:active_tab, :rust)
+     |> assign(:upload_player, "p1")
+     |> assign(:upload_error, nil)
      |> assign(:my_player, nil)
-     |> assign(:local_error, nil)
-     |> assign(:source_draft, template_for(:rules))
-     |> assign_snapshot(snap)
-     |> allow_upload(:wasm, accept: ~w(.wasm), max_entries: 1, max_file_size: 8_000_000)}
+     |> assign_snapshot(Engine.snapshot(id))
+     # accept: :any — several of our extensions (.rs/.go/.wat/.rules) aren't
+     # registered MIME types, which allow_upload's filter rejects. We validate
+     # the extension ourselves in lang_from_ext/1.
+     |> allow_upload(:bot, accept: :any, max_entries: 1, max_file_size: 8_000_000)}
   end
 
-  # --- commands from the UI ---
+  # --- spectator: submit + sim controls ---
 
   @impl true
-  def handle_event("source_changed", %{"source" => source} = params, socket) do
-    {:noreply, assign(socket, source_draft: source, player_draft: player_param(params, socket))}
+  def handle_event("set_tab", %{"tab" => tab}, socket) do
+    {:noreply, assign(socket, :active_tab, String.to_existing_atom(tab))}
   end
 
-  def handle_event("run", %{"source" => source} = params, socket) do
-    socket = assign(socket, :player_draft, player_param(params, socket))
-    {:noreply, compile_load_play(socket, source)}
+  def handle_event("validate_upload", params, socket) do
+    {:noreply, assign(socket, :upload_player, clean_player(params["player"], socket.assigns.upload_player))}
+  end
+
+  def handle_event("upload_bot", params, socket) do
+    id = socket.assigns.region_id
+    player = clean_player(params["player"], socket.assigns.upload_player)
+
+    consumed =
+      consume_uploaded_entries(socket, :bot, fn %{path: path}, entry ->
+        {:ok, {File.read!(path), entry.client_name}}
+      end)
+
+    socket =
+      case consumed do
+        [{content, name}] -> submit_upload(socket, id, player, name, content)
+        [] -> assign(socket, :upload_error, "Choose a file first.")
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("play", _params, socket) do
+    Engine.play(socket.assigns.region_id)
+    {:noreply, socket}
   end
 
   def handle_event("pause", _params, socket) do
@@ -78,52 +92,7 @@ defmodule ConvoyWeb.SimLive do
   end
 
   def handle_event("step", _params, socket) do
-    # Step advances the program already loaded by Run (so we don't recompile
-    # Rust/AS on every click). Edit, then press Run to load changes.
     Engine.step(socket.assigns.region_id)
-    {:noreply, socket}
-  end
-
-  def handle_event("set_language", %{"language" => lang}, socket) do
-    lang = String.to_existing_atom(lang)
-    source = template_for(lang)
-
-    socket = assign(socket, language: lang, source_draft: source, local_error: nil)
-
-    # Switching language just loads a template into the editor — no submission
-    # until Run, so picking a language doesn't make you join.
-    {:noreply, socket}
-  end
-
-  def handle_event("validate_upload", params, socket) do
-    {:noreply, assign(socket, :player_draft, player_param(params, socket))}
-  end
-
-  def handle_event("upload_wasm", params, socket) do
-    id = socket.assigns.region_id
-    player = player_param(params, socket)
-
-    consumed =
-      consume_uploaded_entries(socket, :wasm, fn %{path: path}, entry ->
-        {:ok, {File.read!(path), entry.client_name}}
-      end)
-
-    socket =
-      case consumed do
-        [{bytes, name}] ->
-          display = "#{name} · #{byte_size(bytes)} bytes (uploaded)"
-
-          case Engine.submit_player(id, player, :wasm, bytes, display) do
-            :ok -> Engine.play(id)
-            {:error, _msg} -> :noop
-          end
-
-          assign(socket, local_error: nil, player_draft: player, my_player: player)
-
-        [] ->
-          assign(socket, local_error: "Choose a .wasm file first.")
-      end
-
     {:noreply, socket}
   end
 
@@ -143,32 +112,41 @@ defmodule ConvoyWeb.SimLive do
     {:noreply, assign(socket, :seed, seed)}
   end
 
-  # --- updates from the region process ---
-
   @impl true
   def handle_info({:region_update, snap}, socket) do
     {:noreply, assign_snapshot(socket, snap)}
   end
 
-  # Compile (if needed) and submit as the chosen player, then run. Compile
-  # failures surface as @local_error; instantiation failures come back from the
-  # region (shown per-player in the scoreboard and via program_status).
-  defp compile_load_play(socket, source) do
-    id = socket.assigns.region_id
-    player = socket.assigns.player_draft
-    socket = assign(socket, source_draft: source)
+  # --- submit helpers ---
 
-    case Loader.prepare(socket.assigns.language, source) do
-      {:ok, backend, exec, display} ->
-        case Engine.submit_player(id, player, backend, exec, display) do
-          :ok -> Engine.play(id)
-          {:error, _msg} -> :noop
+  defp submit_upload(socket, id, player, filename, content) do
+    with {:ok, lang} <- lang_from_ext(filename),
+         {:ok, backend, exec, display} <- Loader.prepare(lang, content),
+         :ok <- Engine.submit_player(id, player, backend, exec, display) do
+      Engine.play(id)
+      assign(socket, upload_error: nil, upload_player: player, my_player: player)
+    else
+      {:error, msg} -> assign(socket, :upload_error, msg)
+    end
+  end
+
+  defp lang_from_ext(filename) do
+    case Map.get(@ext_lang, filename |> Path.extname() |> String.downcase()) do
+      nil -> {:error, "unsupported file type — use .rs .go .ts .wat .rules or .wasm"}
+      lang -> {:ok, lang}
+    end
+  end
+
+  defp clean_player(value, fallback) do
+    case value do
+      v when is_binary(v) ->
+        case String.replace(v, ~r/[^a-zA-Z0-9_-]/, "") do
+          "" -> fallback
+          clean -> clean
         end
 
-        assign(socket, local_error: nil, my_player: player)
-
-      {:error, msg} ->
-        assign(socket, :local_error, msg)
+      _ ->
+        fallback
     end
   end
 
@@ -183,21 +161,18 @@ defmodule ConvoyWeb.SimLive do
     |> assign(:players, snap.players)
   end
 
-  # The player name to submit as: the form field if present, else the current draft.
-  defp player_param(params, socket) do
-    case params["player"] do
-      p when is_binary(p) ->
-        case String.replace(p, ~r/[^a-zA-Z0-9_-]/, "") do
-          "" -> socket.assigns.player_draft
-          clean -> clean
-        end
-
-      _ ->
-        socket.assigns.player_draft
-    end
+  # Each tab: the starter code + how to submit it. `toolchain?` flags languages
+  # the server compiles (vs WAT/Rules which need none).
+  defp language_tabs do
+    [
+      %{id: :rust, label: "Rust", ext: "rs", lang: "rust", toolchain?: true, code: Compile.template(:rust)},
+      %{id: :tinygo, label: "Go", ext: "go", lang: "tinygo", toolchain?: true, code: Compile.template(:tinygo)},
+      %{id: :assemblyscript, label: "AssemblyScript", ext: "ts", lang: "assemblyscript", toolchain?: true, code: Compile.template(:assemblyscript)},
+      %{id: :wat, label: "WAT", ext: "wat", lang: "wat", toolchain?: false, code: Wasm.default_source()},
+      %{id: :rules, label: "Rules", ext: "rules", lang: "rules", toolchain?: false, code: Program.default_source()}
+    ]
   end
 
-  # Every region is a named, shared world. `/` is the default "main" world.
   defp region_id(%{"region" => name}) when is_binary(name) and name != "" do
     case name |> String.downcase() |> String.replace(~r/[^a-z0-9_-]/, "") do
       "" -> "main"
@@ -224,13 +199,13 @@ defmodule ConvoyWeb.SimLive do
         <div>
           <h1 class="text-xl font-bold tracking-tight">
             <span class="text-amber-400">Forge</span> &amp; <span class="text-sky-400">Convoy</span>
-            <span class="ml-2 text-xs font-normal text-slate-500">v1 · region {@region_id}</span>
+            <span class="ml-2 text-xs font-normal text-slate-500">region {@region_id}</span>
             <.link navigate={~p"/admin"} class="ml-2 text-xs font-normal text-sky-400 hover:underline">
               overview
             </.link>
           </h1>
           <p class="text-xs text-slate-500 mt-0.5">
-            Your code is your only interface. Write a harvester program; watch the deterministic sim run it.
+            Write a bot in your language, send it to the server, and watch every player's harvesters compete.
           </p>
         </div>
         <div class="flex items-center gap-4 text-sm">
@@ -249,168 +224,22 @@ defmodule ConvoyWeb.SimLive do
         </div>
       </header>
 
-      <div class="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6 p-6">
-        <%!-- left: the code editor + controls --%>
+      <div class="grid grid-cols-1 lg:grid-cols-[460px_1fr] gap-6 p-6">
+        <%!-- left: how to submit a bot --%>
         <section class="space-y-4">
-          <div class="text-xs bg-sky-500/10 border border-sky-500/40 text-sky-200 rounded-lg p-2 mb-3">
-            📡 Spectating region <span class="font-mono font-semibold">{@region_id}</span>.
-            Join by submitting code below, or from your editor:
-            <code class="block mt-1 text-sky-300">mix convoy.run YOUR_BOT --region {@region_id} --player NAME --watch</code>
-          </div>
-
-          <form phx-change="set_language" class="flex items-center gap-2 mb-1">
-            <span class="text-xs uppercase tracking-wide text-slate-400">language</span>
-            <select
-              name="language"
-              class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm font-mono text-slate-100 focus:outline-none focus:border-emerald-500"
-            >
-              <%= for {id, label} <- @languages do %>
-                <option value={id} selected={@language == id}>{label}</option>
-              <% end %>
-            </select>
-            <%= if @language in [:rules, :wat] do %>
-              <span class="text-[10px] text-emerald-500/70 font-mono">no toolchain needed</span>
-            <% end %>
-          </form>
-
-          <%= if @language == :upload do %>
-            <%!-- bring a precompiled .wasm from any language --%>
-            <form phx-change="validate_upload" phx-submit="upload_wasm">
-              <div class="flex items-center justify-between mb-1">
-                <label class="text-xs uppercase tracking-wide text-slate-400">Upload a .wasm module</label>
-                <label class="text-xs text-slate-400 flex items-center gap-1">
-                  play as
-                  <input
-                    type="text"
-                    name="player"
-                    value={@player_draft}
-                    class="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono text-slate-100"
-                  />
-                </label>
-              </div>
-              <div class="mt-1 border border-dashed border-slate-700 rounded-lg p-4 bg-slate-900 text-center text-sm">
-                <.live_file_input upload={@uploads.wasm} class="text-xs text-slate-300" />
-                <p class="mt-2 text-[11px] text-slate-500">
-                  Compile locally (Rust, TinyGo, AssemblyScript, C…) and drop the
-                  <code class="text-fuchsia-300">.wasm</code>
-                  here. It must export <code class="text-fuchsia-300">decide</code> (see the ABI panel).
-                </p>
-                <%= for entry <- @uploads.wasm.entries do %>
-                  <p class="mt-1 text-[11px] text-emerald-300 font-mono">{entry.client_name} · {entry.progress}%</p>
-                  <%= for err <- upload_errors(@uploads.wasm, entry) do %>
-                    <p class="text-[11px] text-rose-400">{error_to_string(err)}</p>
-                  <% end %>
-                <% end %>
-              </div>
-              <button
-                type="submit"
-                class="mt-3 px-4 py-1.5 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-slate-950 font-semibold text-sm"
-              >
-                ⬆ Upload &amp; Run
-              </button>
-            </form>
-          <% else %>
-            <form phx-change="source_changed" phx-submit="run">
-              <div class="flex items-center justify-between mb-1">
-                <label class="text-xs uppercase tracking-wide text-slate-400">
-                  Harvester program · {lang_label(@languages, @language)}
-                </label>
-                <label class="text-xs text-slate-400 flex items-center gap-1">
-                  play as
-                  <input
-                    type="text"
-                    name="player"
-                    value={@player_draft}
-                    class="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono text-slate-100"
-                  />
-                </label>
-              </div>
-              <textarea
-                name="source"
-                spellcheck="false"
-                rows="12"
-                class="mt-1 w-full font-mono text-sm bg-slate-900 border border-slate-700 rounded-lg p-3 text-emerald-200 focus:outline-none focus:border-emerald-500 resize-y"
-              >{@source_draft}</textarea>
-
-              <%= if @language in [:rust, :tinygo, :assemblyscript] and not Compile.available?(@language) do %>
-                <div class="mt-2 text-xs bg-amber-500/10 border border-amber-500/40 text-amber-300 rounded p-2">
-                  ⚠ {Compile.label(@language)} toolchain not installed on the server.
-                  {Compile.install_hint(@language)}
-                  Or pick <span class="font-semibold">Upload .wasm</span> and compile locally.
-                </div>
-              <% end %>
-
-              <.program_status local_error={@local_error} compile_error={player_error(@players, @my_player)} />
-
-              <div class="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="submit"
-                  class="px-4 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-sm"
-                >
-                  ▶ {if @language in [:rules, :wat], do: "Run", else: "Compile & Run"}
-                </button>
-                <button
-                  type="button"
-                  phx-click="pause"
-                  class="px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 text-sm"
-                >
-                  ⏸ Pause
-                </button>
-                <button
-                  type="button"
-                  phx-click="step"
-                  class="px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 text-sm"
-                >
-                  ⏭ Step
-                </button>
-                <button
-                  type="button"
-                  phx-click="reset"
-                  class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-sm"
-                >
-                  ↻ Reset
-                </button>
-              </div>
-            </form>
-          <% end %>
-
-          <%= if @language == :upload do %>
-            <.program_status local_error={@local_error} compile_error={@compile_error} />
-          <% end %>
-
-          <div class="flex items-center gap-4 text-sm">
-            <div class="flex items-center gap-1">
-              <span class="text-xs text-slate-400 mr-1">speed</span>
-              <%= for {label, ms} <- @speeds do %>
-                <button
-                  phx-click="set_speed"
-                  phx-value-ms={ms}
-                  class={[
-                    "px-2 py-0.5 rounded text-xs font-mono",
-                    @tick_ms == ms && "bg-sky-500 text-slate-950",
-                    @tick_ms != ms && "bg-slate-800 hover:bg-slate-700 text-slate-300"
-                  ]}
-                >
-                  {label}
-                </button>
-              <% end %>
-            </div>
-            <form phx-submit="set_seed" class="flex items-center gap-1">
-              <span class="text-xs text-slate-400">seed</span>
-              <input
-                type="text"
-                name="seed"
-                value={@seed}
-                class="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono"
-              />
-            </form>
-          </div>
-
-          <.cheatsheet language={@language} fuel_budget={@fuel_budget} />
+          <.submit_panel
+            tabs={@tabs}
+            active_tab={@active_tab}
+            region_id={@region_id}
+            base_url={@base_url}
+          />
+          <.upload_panel uploads={@uploads} upload_player={@upload_player} upload_error={@upload_error} />
+          <.abi_panel fuel_budget={@fuel_budget} />
         </section>
 
         <%!-- right: the world --%>
         <section class="space-y-4">
+          <.controls status={@status} speeds={@speeds} tick_ms={@tick_ms} seed={@seed} />
           <.scoreboard scores={@scores} players={@players} my_player={@my_player} />
           <.grid world={@world} />
           <.entities world={@world} />
@@ -422,6 +251,165 @@ defmodule ConvoyWeb.SimLive do
   end
 
   # --- function components ---
+
+  attr :tabs, :list, required: true
+  attr :active_tab, :atom, required: true
+  attr :region_id, :string, required: true
+  attr :base_url, :string, required: true
+
+  defp submit_panel(assigns) do
+    assigns = assign(assigns, :tab, Enum.find(assigns.tabs, &(&1.id == assigns.active_tab)))
+
+    ~H"""
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+      <h2 class="text-sm font-semibold text-slate-200">Submit a bot</h2>
+      <p class="text-xs text-slate-500 mt-1">
+        Your bot is a tiny WebAssembly module that exports <code class="text-fuchsia-300">decide</code>.
+        Pick a language, write it, and send it — the server compiles Rust/Go/AssemblyScript for you.
+      </p>
+
+      <div class="flex flex-wrap gap-1 mt-3">
+        <%= for t <- @tabs do %>
+          <button
+            phx-click="set_tab"
+            phx-value-tab={t.id}
+            class={[
+              "px-2 py-0.5 rounded text-xs font-mono",
+              @active_tab == t.id && "bg-emerald-500 text-slate-950",
+              @active_tab != t.id && "bg-slate-800 hover:bg-slate-700 text-slate-300"
+            ]}
+          >
+            {t.label}
+          </button>
+        <% end %>
+      </div>
+
+      <div class="mt-1 text-[10px] text-slate-500">
+        <%= if @tab.toolchain?, do: "compiled server-side", else: "no toolchain needed" %>
+      </div>
+
+      <div class="text-[10px] uppercase tracking-wide text-slate-500 mt-3 mb-1">
+        example · bot.{@tab.ext}
+      </div>
+      <pre class="bg-slate-950 rounded p-3 text-[11px] leading-relaxed text-emerald-200 overflow-x-auto max-h-64">{@tab.code}</pre>
+
+      <div class="text-[10px] uppercase tracking-wide text-slate-500 mt-3 mb-1">send it</div>
+      <pre class="bg-slate-950 rounded p-3 text-[11px] leading-relaxed text-sky-200 overflow-x-auto">curl --data-binary @bot.{@tab.ext} -H 'Content-Type: application/octet-stream' {@base_url}/api/region/{@region_id}/upload?player=YOU&amp;lang={@tab.lang}</pre>
+      <div class="text-[10px] text-slate-500 mt-1">or, from a clone of the repo:</div>
+      <pre class="bg-slate-950 rounded p-2 mt-1 text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap">mix convoy.run bot.{@tab.ext} --region {@region_id} --player YOU</pre>
+    </div>
+    """
+  end
+
+  attr :uploads, :any, required: true
+  attr :upload_player, :string, required: true
+  attr :upload_error, :string, default: nil
+
+  defp upload_panel(assigns) do
+    ~H"""
+    <form phx-change="validate_upload" phx-submit="upload_bot" class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+      <div class="flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-slate-200">…or upload a file</h2>
+        <label class="text-xs text-slate-400 flex items-center gap-1">
+          player
+          <input
+            type="text"
+            name="player"
+            value={@upload_player}
+            class="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono text-slate-100"
+          />
+        </label>
+      </div>
+      <p class="text-xs text-slate-500 mt-1">
+        Pick a source file (<code>.rs .go .ts .wat .rules</code>) or a precompiled <code>.wasm</code>.
+      </p>
+      <div class="mt-2 flex items-center gap-2">
+        <.live_file_input upload={@uploads.bot} class="text-xs text-slate-300" />
+        <button
+          type="submit"
+          class="px-3 py-1 rounded-md bg-fuchsia-500 hover:bg-fuchsia-400 text-slate-950 font-semibold text-sm"
+        >
+          ⬆ Upload
+        </button>
+      </div>
+      <%= for entry <- @uploads.bot.entries do %>
+        <p class="mt-1 text-[11px] text-emerald-300 font-mono">{entry.client_name} · {entry.progress}%</p>
+        <%= for err <- upload_errors(@uploads.bot, entry) do %>
+          <p class="text-[11px] text-rose-400">{error_to_string(err)}</p>
+        <% end %>
+      <% end %>
+      <p :if={@upload_error} class="mt-2 text-[11px] font-mono text-rose-300 whitespace-pre-wrap">⛔ {@upload_error}</p>
+    </form>
+    """
+  end
+
+  attr :fuel_budget, :integer, required: true
+
+  defp abi_panel(assigns) do
+    ~H"""
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-400">
+      <summary class="cursor-pointer text-slate-300 font-semibold">The decide ABI</summary>
+      <div class="mt-2 space-y-2">
+        <p>
+          Each tick, per harvester, the sim calls your <code class="text-fuchsia-300">decide</code> with a
+          read-only view and you return an intent code. It runs under a
+          <code class="text-fuchsia-300">{@fuel_budget}</code>-instruction fuel budget; zero host imports.
+        </p>
+        <pre class="bg-slate-950 rounded p-2 text-fuchsia-200">decide(cargo, cargo_max, at_base, on_resource,
+       res_dx, res_dy, base_dx, base_dy, tick) -> code</pre>
+        <div>
+          <div class="text-slate-300">return code → intent</div>
+          <code class="text-fuchsia-300">1 harvest · 2 unload · 3 to_base · 4 to_resource · 5 wander · 6 to_far_resource · 10-13 move ±x/±y · else idle</code>
+        </div>
+        <p class="text-slate-500">
+          The Rules DSL is different — see the <code>Rules</code> tab. Full guide:
+          <code>docs/writing-bots.md</code>.
+        </p>
+      </div>
+    </details>
+    """
+  end
+
+  attr :status, :atom, required: true
+  attr :speeds, :list, required: true
+  attr :tick_ms, :integer, required: true
+  attr :seed, :integer, required: true
+
+  defp controls(assigns) do
+    ~H"""
+    <div class="flex flex-wrap items-center gap-3 text-sm">
+      <%= if @status == :running do %>
+        <button phx-click="pause" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">⏸ Pause</button>
+      <% else %>
+        <button phx-click="play" class="px-3 py-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-sm">▶ Play</button>
+      <% end %>
+      <button phx-click="step" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">⏭ Step</button>
+      <button
+        phx-click="reset"
+        data-confirm="Reset this shared world (keeps players, restarts the map)?"
+        class="px-3 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-sm"
+      >↻ Reset</button>
+      <div class="flex items-center gap-1">
+        <span class="text-xs text-slate-400 mr-1">speed</span>
+        <%= for {label, ms} <- @speeds do %>
+          <button
+            phx-click="set_speed"
+            phx-value-ms={ms}
+            class={[
+              "px-2 py-0.5 rounded text-xs font-mono",
+              @tick_ms == ms && "bg-sky-500 text-slate-950",
+              @tick_ms != ms && "bg-slate-800 hover:bg-slate-700 text-slate-300"
+            ]}
+          >{label}</button>
+        <% end %>
+      </div>
+      <form phx-submit="set_seed" class="flex items-center gap-1">
+        <span class="text-xs text-slate-400">seed</span>
+        <input type="text" name="seed" value={@seed} class="w-14 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs font-mono" />
+      </form>
+    </div>
+    """
+  end
 
   attr :label, :string, required: true
   attr :value, :any, required: true
@@ -443,12 +431,9 @@ defmodule ConvoyWeb.SimLive do
   defp scoreboard(assigns) do
     ~H"""
     <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
-      <div class="flex items-center justify-between mb-2">
-        <div class="text-xs uppercase tracking-wide text-slate-400">Players</div>
-        <div class="text-[10px] text-slate-500">submit more with <code class="text-slate-400">mix convoy.run --player</code></div>
-      </div>
+      <div class="text-xs uppercase tracking-wide text-slate-400 mb-2">Players</div>
       <%= if @scores == %{} do %>
-        <div class="text-xs text-slate-500">No players yet — submit code to join.</div>
+        <div class="text-xs text-slate-500">No players yet — submit a bot to join.</div>
       <% end %>
       <div class="space-y-1">
         <%= for {player, score} <- Enum.sort_by(@scores, fn {_p, s} -> -s end) do %>
@@ -456,12 +441,8 @@ defmodule ConvoyWeb.SimLive do
           <div class="flex items-center gap-2 text-sm">
             <span class={["w-2.5 h-2.5 rounded-full", color.dot]}></span>
             <span class={["font-mono", color.text]}>{player}</span>
-            <%= if player == @my_player do %>
-              <span class="text-[10px] text-slate-500">(you)</span>
-            <% end %>
-            <%= if err = get_in(@players, [player, :compile_error]) do %>
-              <span class="text-[10px] text-rose-400" title={err}>⛔</span>
-            <% end %>
+            <span :if={player == @my_player} class="text-[10px] text-slate-500">(you)</span>
+            <span :if={err = get_in(@players, [player, :compile_error])} class="text-[10px] text-rose-400" title={err}>⛔</span>
             <span class="ml-auto font-mono font-bold text-slate-100">{score}</span>
           </div>
         <% end %>
@@ -531,92 +512,10 @@ defmodule ConvoyWeb.SimLive do
     """
   end
 
-  attr :local_error, :string, default: nil
-  attr :compile_error, :string, default: nil
-
-  defp program_status(assigns) do
-    ~H"""
-    <%= cond do %>
-      <% @local_error -> %>
-        <div class="mt-2 text-xs font-mono bg-rose-500/10 border border-rose-500/40 text-rose-300 rounded p-2 whitespace-pre-wrap">⛔ {@local_error}</div>
-      <% @compile_error -> %>
-        <div class="mt-2 text-xs font-mono bg-rose-500/10 border border-rose-500/40 text-rose-300 rounded p-2 whitespace-pre-wrap">⛔ {@compile_error}</div>
-      <% true -> %>
-        <div class="mt-2 text-xs font-mono text-emerald-500/70">✓ program loaded</div>
-    <% end %>
-    """
-  end
-
-  attr :language, :atom, required: true
-  attr :fuel_budget, :integer, required: true
-
-  defp cheatsheet(%{language: :rules} = assigns), do: rules_cheatsheet(assigns)
-  defp cheatsheet(assigns), do: wasm_cheatsheet(assigns)
-
-  defp wasm_cheatsheet(assigns) do
-    ~H"""
-    <details class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-400">
-      <summary class="cursor-pointer text-slate-300 font-semibold">WASM execution tier</summary>
-      <div class="mt-2 space-y-2">
-        <p>
-          Your module runs under <span class="text-fuchsia-300">Wasmtime</span>
-          with a per-entity fuel budget of
-          <code class="text-fuchsia-300">{@fuel_budget}</code>
-          instructions/tick. Burn it all (e.g. an infinite loop) and the call traps —
-          contained, the harvester just idles that tick. Bring Rust, TinyGo,
-          AssemblyScript, or hand-written WAT.
-        </p>
-        <p>
-          Export <code class="text-fuchsia-300">decide(...)</code> with this ABI (all i32):
-        </p>
-        <pre class="bg-slate-950 rounded p-2 text-fuchsia-200">decide(cargo, cargo_max, at_base, on_resource,
-       res_dx, res_dy, base_dx, base_dy, tick) -> code</pre>
-        <div>
-          <div class="text-slate-300">return code → intent</div>
-          <code class="text-fuchsia-300">1 harvest · 2 unload · 3 to_base · 4 to_resource · 5 wander · 6 to_far_resource (from base) · 10-13 move ±x/±y · else idle</code>
-        </div>
-      </div>
-    </details>
-    """
-  end
-
-  defp rules_cheatsheet(assigns) do
-    ~H"""
-    <details class="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-400">
-      <summary class="cursor-pointer text-slate-300 font-semibold">Rule DSL</summary>
-      <div class="mt-2 space-y-2">
-        <p>One rule per line, evaluated top-to-bottom; first match wins. Each rule returns an <em>intent</em> — the sim resolves it authoritatively (you can't cheat position or ore).</p>
-        <div>
-          <div class="text-slate-300">conditions</div>
-          <code class="text-emerald-300">cargo_full · cargo_empty · has_cargo · on_resource · at_base · can_unload · always</code>
-        </div>
-        <div>
-          <div class="text-slate-300">actions</div>
-          <code class="text-emerald-300">harvest · unload · to_base · to_resource · wander · idle</code>
-        </div>
-        <pre class="bg-slate-950 rounded p-2 text-emerald-200">when can_unload  unload
-    when cargo_full  to_base
-    when on_resource harvest
-    otherwise        to_resource</pre>
-      </div>
-    </details>
-    """
-  end
-
   # --- view helpers ---
 
-  defp lang_label(languages, id) do
-    case List.keyfind(languages, id, 0) do
-      {_id, label} -> label
-      nil -> to_string(id)
-    end
-  end
-
-  defp player_error(_players, nil), do: nil
-  defp player_error(players, player), do: get_in(players, [player, :compile_error])
-
   defp error_to_string(:too_large), do: "file too large (max 8 MB)"
-  defp error_to_string(:not_accepted), do: "not a .wasm file"
+  defp error_to_string(:not_accepted), do: "unsupported file type (.rs .go .ts .wat .rules .wasm)"
   defp error_to_string(:too_many_files), do: "one file at a time"
   defp error_to_string(other), do: to_string(other)
 
@@ -627,16 +526,10 @@ defmodule ConvoyWeb.SimLive do
 
     cond do
       here != [] ->
-        # Colour the cell by the (lowest-id) occupant's owner so you can see
-        # whose harvesters are where in the shared world.
         owner = here |> Enum.min_by(& &1.id) |> Map.get(:owner)
         owners = here |> Enum.map(& &1.owner) |> Enum.uniq() |> Enum.join(",")
 
-        %{
-          glyph: "🤖",
-          bg: player_color(owner).cell,
-          title: "#{owners} @ #{x},#{y}"
-        }
+        %{glyph: "🤖", bg: player_color(owner).cell, title: "#{owners} @ #{x},#{y}"}
 
       pos == world.base ->
         %{glyph: "🏠", bg: "bg-slate-700", title: "Base @ #{x},#{y}"}
