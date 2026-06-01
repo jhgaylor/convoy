@@ -129,6 +129,30 @@ defmodule Convoy.Engine.Colony.World do
     cfg(w, :storage_base) + length(finished_buildings(w, @bld_storage)) * cfg(w, :storage_step)
   end
 
+  @doc "Potential ore→goods throughput per tick at the current refineries/levels (the colony's refine capacity, incl. the spawner's base forge)."
+  def refine_throughput(%World{} = w) do
+    rate = cfg(w, :refine_rate)
+    refineries = finished_buildings(w, @bld_refinery) |> Enum.map(&(rate * (&1.level + 1))) |> Enum.sum()
+    cfg(w, :base_refine_rate) + refineries
+  end
+
+  @doc """
+  Derived refining state for the UI (read-only): storage `cap`, refine
+  `throughput`/tick, finished `refineries` count, and the `stall` reason that
+  halts conversion this tick — `:storage_full` (goods at cap), `:no_ore` (empty
+  stockpile), or `nil` (forging).
+  """
+  def refine_report(%World{} = w) do
+    stall =
+      cond do
+        storage_cap(w) - w.goods <= 0 -> :storage_full
+        w.ore <= 0 -> :no_ore
+        true -> nil
+      end
+
+    %{cap: storage_cap(w), throughput: refine_throughput(w), refineries: length(finished_buildings(w, @bld_refinery)), stall: stall}
+  end
+
   @doc "Population cap = base + step per spawner level (finished spawners)."
   def pop_cap(%World{} = w) do
     levels = finished_buildings(w, @bld_spawner) |> Enum.map(&(&1.level + 1)) |> Enum.sum()
@@ -238,11 +262,8 @@ defmodule Convoy.Engine.Colony.World do
   # Each finished refinery converts up to rate*(level+1) ore→goods/tick, bounded
   # by the stockpile and remaining storage. Lifetime refined is the score.
   defp refine(%World{} = w) do
-    rate = cfg(w, :refine_rate)
-    refineries = finished_buildings(w, @bld_refinery) |> Enum.map(&(rate * (&1.level + 1))) |> Enum.sum()
-    total = cfg(w, :base_refine_rate) + refineries
     room = max(storage_cap(w) - w.goods, 0)
-    n = Enum.min([w.ore, total, room])
+    n = Enum.min([w.ore, refine_throughput(w), room])
 
     if n > 0 do
       %{w | ore: w.ore - n, goods: w.goods + n, refined_total: w.refined_total + n}

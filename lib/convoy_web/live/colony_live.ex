@@ -9,7 +9,7 @@ defmodule ConvoyWeb.ColonyLive do
   use ConvoyWeb, :live_view
 
   alias Convoy.Engine.Colony.{World, Market, Region}
-  alias Convoy.{Loader, Compile, Version}
+  alias Convoy.{Loader, Compile, Examples, Version}
 
   @speeds [{"0.5x", 800}, {"1x", 400}, {"2x", 200}, {"4x", 100}]
 
@@ -46,6 +46,9 @@ defmodule ConvoyWeb.ColonyLive do
      |> assign(:active_tab, :rust)
      |> assign(:show_help, false)
      |> assign(:show_ref, false)
+     |> assign(:examples, Examples.all())
+     |> assign(:open_example, nil)
+     |> assign(:example_error, nil)
      |> assign_snapshot(Region.snapshot(id))
      |> allow_upload(:bot, accept: :any, max_entries: 1, max_file_size: 8_000_000)}
   end
@@ -63,6 +66,21 @@ defmodule ConvoyWeb.ColonyLive do
   def handle_event("toggle_help", _, socket), do: {:noreply, update(socket, :show_help, &(not &1))}
   def handle_event("toggle_ref", _, socket), do: {:noreply, update(socket, :show_ref, &(not &1))}
   def handle_event("validate_upload", params, socket), do: {:noreply, assign(socket, :upload_player, clean(params["player"], socket.assigns.upload_player))}
+
+  def handle_event("toggle_example", %{"id" => id}, socket) do
+    {:noreply, update(socket, :open_example, &if(&1 == id, do: nil, else: id))}
+  end
+
+  def handle_event("play_example", %{"bot" => id} = params, socket) do
+    case Examples.get(id) do
+      nil ->
+        {:noreply, assign(socket, :example_error, "unknown example: #{id}")}
+
+      bot ->
+        player = clean(params["player"], bot.id)
+        {:noreply, submit_example(socket, bot, player)}
+    end
+  end
 
   def handle_event("upload_bot", params, socket) do
     id = socket.assigns.region_id
@@ -91,6 +109,15 @@ defmodule ConvoyWeb.ColonyLive do
       assign(socket, upload_error: nil, upload_player: player, my_player: player)
     else
       {:error, msg} -> assign(socket, :upload_error, msg)
+    end
+  end
+
+  defp submit_example(socket, bot, player) do
+    with {:ok, _backend, exec, display} <- Loader.prepare(bot.lang, bot.source),
+         :ok <- Region.submit_player(socket.assigns.region_id, player, exec, display) do
+      assign(socket, example_error: nil, my_player: player)
+    else
+      {:error, msg} -> assign(socket, :example_error, "#{bot.name}: #{msg}")
     end
   end
 
@@ -190,6 +217,7 @@ defmodule ConvoyWeb.ColonyLive do
         <section class="space-y-4">
           <.scoreboard players={@players} my_player={@my_player} />
           <.submit_panel uploads={@uploads} upload_player={@upload_player} upload_error={@upload_error} />
+          <.example_bots examples={@examples} open_example={@open_example} example_error={@example_error} my_player={@my_player} />
           <.getting_started show_help={@show_help} active_tab={@active_tab} region_id={@region_id} base_url={@base_url} />
           <.field_guide show_ref={@show_ref} />
           <.legend />
@@ -249,6 +277,18 @@ defmodule ConvoyWeb.ColonyLive do
   attr :mine, :boolean, default: false
 
   defp colony_view(assigns) do
+    r = World.refine_report(assigns.colony)
+    fill_pct = if r.cap > 0, do: min(round(assigns.colony.goods / r.cap * 100), 100), else: 0
+
+    src_label =
+      case r.refineries do
+        0 -> "base forge"
+        1 -> "1 refinery"
+        n -> "#{n} refineries"
+      end
+
+    assigns = assign(assigns, refine: r, fill_pct: fill_pct, src_label: src_label)
+
     ~H"""
     <div class={["bg-slate-900 border rounded-lg p-3", if(@mine, do: "border-fuchsia-600/50", else: "border-slate-800")]}>
       <div class="flex items-center gap-2 mb-2">
@@ -256,9 +296,30 @@ defmodule ConvoyWeb.ColonyLive do
         <span class={["text-xs font-mono", @color.text]}>{@player}</span>
         <span :if={@mine} class="text-[10px] text-fuchsia-400">(you)</span>
         <span class="ml-auto font-mono text-[11px] text-slate-400">
-          ⛏{@colony.ore} ◆{@colony.goods} ⚒{@colony.refined_total} 🏪{@colony.credits}
+          ⛏{@colony.ore} ◆{@colony.goods}/{@refine.cap} ⚒{@colony.refined_total} 🏪{@colony.credits}
         </span>
       </div>
+
+      <div class="mb-2 space-y-1">
+        <div class="flex items-center gap-2 text-[10px]">
+          <span class="text-slate-500 w-16 shrink-0 whitespace-nowrap">📦 storage</span>
+          <div class="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden">
+            <div class={["h-full", if(@refine.stall == :storage_full, do: "bg-rose-500", else: "bg-sky-500")]} style={"width: #{@fill_pct}%"}></div>
+          </div>
+          <span class="font-mono text-slate-500 w-16 text-right shrink-0">◆{@colony.goods}/{@refine.cap}</span>
+        </div>
+        <div class="flex items-center gap-2 text-[10px] font-mono">
+          <span class="text-slate-500 w-16 shrink-0 whitespace-nowrap">⚙ refine</span>
+          <span class="text-emerald-400">⛏→◆ {@refine.throughput}/tick</span>
+          <span class="text-slate-600">· {@src_label}</span>
+          <span class="ml-auto">
+            <span :if={@refine.stall == :storage_full} class="text-amber-400">⚠ storage full</span>
+            <span :if={@refine.stall == :no_ore} class="text-slate-600">idle · no ore</span>
+            <span :if={is_nil(@refine.stall)} class="text-emerald-500/70">forging</span>
+          </span>
+        </div>
+      </div>
+
       <.grid width={@colony.config.width} height={@colony.config.height} cells={
         for y <- 0..(@colony.config.height - 1), x <- 0..(@colony.config.width - 1), do: colony_cell(@colony, {x, y}, @color)
       } max="460px" />
@@ -343,6 +404,64 @@ defmodule ConvoyWeb.ColonyLive do
       </div>
       <p :if={@upload_error} class="mt-2 text-[11px] font-mono text-rose-300 whitespace-pre-wrap">⛔ {@upload_error}</p>
     </form>
+    """
+  end
+
+  attr :examples, :list, required: true
+  attr :open_example, :string, default: nil
+  attr :example_error, :string, default: nil
+  attr :my_player, :string, default: nil
+
+  defp example_bots(assigns) do
+    ~H"""
+    <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
+      <div class="text-xs uppercase tracking-wide text-slate-400 mb-1">Example bots — read &amp; play</div>
+      <p class="text-[11px] text-slate-500 mb-2">
+        Complete, working colony brains. Read the source to learn the ABI, then drop one straight into the world as a player. Each runs the same loop with a different strategy.
+      </p>
+      <div class="space-y-2">
+        <%= for bot <- @examples do %>
+          <% open = @open_example == bot.id %>
+          <div class={["border rounded-md p-2", if(@my_player == bot.id, do: "border-fuchsia-600/50", else: "border-slate-800")]}>
+            <div class="flex items-center gap-2">
+              <span class={["w-2.5 h-2.5 rounded-full shrink-0", color(bot.id).dot]}></span>
+              <span class={["font-mono text-xs", color(bot.id).text]}>{bot.name}</span>
+              <span
+                :if={not bot.seeded?}
+                class="text-[9px] font-mono uppercase tracking-wide text-amber-400/80 bg-amber-500/10 rounded px-1 py-px"
+                title="not running by default — submit it to field this bot"
+              >new</span>
+              <span class="text-[10px] text-slate-500 truncate">· {bot.tagline}</span>
+              <span class="ml-auto text-[10px] font-mono text-slate-600 uppercase">{bot.lang}</span>
+            </div>
+            <p class="text-[11px] text-slate-500 leading-snug mt-1">{bot.blurb}</p>
+            <div class="flex items-center gap-2 mt-2">
+              <button
+                type="button"
+                phx-click="toggle_example"
+                phx-value-id={bot.id}
+                class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-mono"
+              >
+                {if open, do: "▲ hide code", else: "▼ view code"}
+              </button>
+              <form phx-submit="play_example" class="flex items-center gap-1 ml-auto">
+                <input type="hidden" name="bot" value={bot.id} />
+                <input
+                  type="text"
+                  name="player"
+                  value={bot.id}
+                  class="w-20 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] font-mono text-slate-100"
+                  title="player id to join as (it'll overwrite an existing colony with that id)"
+                />
+                <button type="submit" class="px-2 py-0.5 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-[11px]">▶ Play</button>
+              </form>
+            </div>
+            <pre :if={open} class="bg-slate-950 rounded p-2 mt-2 text-[10px] leading-snug text-emerald-200 overflow-auto max-h-80">{bot.source}</pre>
+          </div>
+        <% end %>
+      </div>
+      <p :if={@example_error} class="mt-2 text-[11px] font-mono text-rose-300 whitespace-pre-wrap">⛔ {@example_error}</p>
+    </div>
     """
   end
 
