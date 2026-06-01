@@ -249,20 +249,53 @@ defmodule Convoy.Engine.Sim do
     end
   end
 
-  # Convoys standing on the market sell their shipment for credits, then leave
-  # the board. Each sale is independent, so order doesn't matter.
+  # Convoys reaching the market either sell (a self-contained region) or cross
+  # the border into the neighbor region (primer §4). Each is independent, so
+  # order doesn't matter. Cross-region effects are queued onto the world's
+  # outbox for the Region to send; the Sim itself stays pure.
   defp sell_convoys(world) do
     market = World.market(world)
+    neighbor = World.neighbor(world)
 
     world
     |> World.convoys()
     |> Enum.filter(fn e -> {e.x, e.y} == market end)
-    |> Enum.reduce(world, fn c, acc ->
-      acc
+    |> Enum.reduce(world, fn c, acc -> arrive(acc, c, neighbor) end)
+  end
+
+  # No neighbor: terminal market. Sell — crediting the shipment's origin region.
+  defp arrive(world, c, nil) do
+    origin = Map.get(c, :origin_region) || world.region_id
+
+    if origin == world.region_id do
+      world
       |> World.credit_market(c.owner, c.cargo)
       |> World.remove_entity(c.id)
       |> note("#{c.owner}/C#{c.id} delivered a shipment to market (+#{c.cargo} credits).")
-    end)
+    else
+      # A shipment that crossed in from elsewhere: queue a credit-back to its
+      # home region, and take it off the board here.
+      world
+      |> Map.update!(:pending_credits, &[%{region: origin, owner: c.owner, amount: c.cargo} | &1])
+      |> World.remove_entity(c.id)
+      |> note("#{c.owner}/C#{c.id} sold at market (#{c.cargo} credits → #{origin}).")
+    end
+  end
+
+  # This region borders another: the convoy crosses instead of selling. Queue
+  # the handoff and take it off the board (phase 1 of the two-phase handoff;
+  # the Region delivers it to the neighbor, phase 2).
+  defp arrive(world, c, neighbor) do
+    payload = %{
+      owner: c.owner,
+      cargo: c.cargo,
+      origin_region: Map.get(c, :origin_region) || world.region_id
+    }
+
+    world
+    |> Map.update!(:departing, &[%{to: neighbor, convoy: payload} | &1])
+    |> World.remove_entity(c.id)
+    |> note("#{c.owner}/C#{c.id} crossed the border toward #{neighbor}.")
   end
 
   defp drop_entities(world, ids), do: Enum.reduce(ids, world, &World.remove_entity(&2, &1))

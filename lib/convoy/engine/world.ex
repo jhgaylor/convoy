@@ -58,11 +58,21 @@ defmodule Convoy.Engine.World do
             tick: 0,
             base: {0, 0},
             market: {15, 11},
+            # Optional neighbor region id (primer §4). When set, convoys reaching
+            # the market *cross the border* into that region instead of selling
+            # here. nil = a self-contained, fully-deterministic region (the
+            # default): convoys sell in-world.
+            neighbor: nil,
             resources: %{},
             entities: [],
             bases: %{},
             next_entity_id: 1,
             replenished: 0,
+            # Transient per-tick outboxes the Sim fills and the Region drains
+            # into cross-region messages (border handoff + credit-back). Always
+            # empty for a neighbor-less region, so single-region play is pure.
+            departing: [],
+            pending_credits: [],
             events: []
 
   @type t :: %World{
@@ -73,11 +83,14 @@ defmodule Convoy.Engine.World do
           tick: non_neg_integer(),
           base: pos(),
           market: pos(),
+          neighbor: String.t() | nil,
           resources: %{pos() => non_neg_integer()},
           entities: [entity()],
           bases: %{player_id() => base()},
           next_entity_id: pos_integer(),
           replenished: non_neg_integer(),
+          departing: [map()],
+          pending_credits: [map()],
           events: [String.t()]
         }
 
@@ -129,6 +142,7 @@ defmodule Convoy.Engine.World do
     width = Keyword.get(opts, :width, 16)
     height = Keyword.get(opts, :height, 12)
     base = {0, 0}
+    neighbor = Keyword.get(opts, :neighbor)
     # The market sits at the opposite corner from base — the far end of the
     # contested run. Deterministic, so replays and layouts stay reproducible.
     market = {width - 1, height - 1}
@@ -146,6 +160,7 @@ defmodule Convoy.Engine.World do
       tick: 0,
       base: base,
       market: market,
+      neighbor: neighbor,
       resources: resources,
       entities: [],
       bases: %{},
@@ -398,6 +413,9 @@ defmodule Convoy.Engine.World do
       y: by,
       cargo: @shipment_value,
       cargo_max: @shipment_value,
+      # The region to credit when this shipment finally sells — its home, even
+      # if it crosses a border into a market region (primer §4).
+      origin_region: world.region_id,
       last_action: :launch
     }
 
@@ -431,10 +449,52 @@ defmodule Convoy.Engine.World do
   @spec convoys(t()) :: [entity()]
   def convoys(%World{entities: es}), do: es |> Enum.filter(&convoy?/1) |> Enum.sort_by(& &1.id)
 
-  @doc "Remove an entity by id (a convoy that sold or was seized)."
+  @doc "Remove an entity by id (a convoy that sold, crossed a border, or was seized)."
   @spec remove_entity(t(), pos_integer()) :: t()
   def remove_entity(%World{} = world, id),
     do: %{world | entities: Enum.reject(world.entities, &(&1.id == id))}
+
+  # --- cross-region border crossing (primer §4) ---
+
+  @doc "The neighbor region convoys cross into, or nil for a self-contained region."
+  @spec neighbor(t()) :: String.t() | nil
+  def neighbor(%World{neighbor: n}), do: n
+
+  @doc """
+  Inject a convoy arriving from another region (primer §4). It enters at this
+  region's base with a fresh local id, keeping its owner, cargo, and the origin
+  region to credit when it eventually sells.
+  """
+  @spec receive_convoy(t(), map()) :: t()
+  def receive_convoy(%World{} = world, %{owner: owner, cargo: cargo, origin_region: origin}) do
+    {bx, by} = world.base
+
+    convoy = %{
+      id: world.next_entity_id,
+      owner: owner,
+      kind: :convoy,
+      x: bx,
+      y: by,
+      cargo: cargo,
+      cargo_max: cargo,
+      origin_region: origin,
+      last_action: :arrive
+    }
+
+    world
+    |> Map.update!(:entities, &(&1 ++ [convoy]))
+    |> Map.update!(:next_entity_id, &(&1 + 1))
+  end
+
+  @doc """
+  Take and clear this tick's outbound cross-region messages. The Region drains
+  these after each tick and turns them into casts: `departing` convoys go to the
+  neighbor region, `pending_credits` go back to each shipment's origin region.
+  Returns `{departing, pending_credits, cleared_world}`.
+  """
+  @spec take_outbox(t()) :: {[map()], [map()], t()}
+  def take_outbox(%World{departing: d, pending_credits: c} = world),
+    do: {d, c, %{world | departing: [], pending_credits: []}}
 
   @doc "The ore amount a freshly-spawned (or generated) deposit holds."
   @spec resource_amount() :: pos_integer()

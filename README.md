@@ -118,6 +118,7 @@ the doc explains why; use AssemblyScript for a scripting feel).
 | **The Forge** (§1): refine harvested ore, climb a rate-based tech ladder | each player has a `base` (`World.bases`): `unload` stocks raw ore, `Sim` refines it to goods each tick (`World.refine_all/1`), and `build` intents (codes 20/21/22) spend goods on **refine / cargo / fuel** tech |
 | **Player Memory** (§8): persistent scratch state between ticks | the wasm instance is reused across ticks, so a bot's linear memory persists live; `Wasm.snapshot_memory/1` + `restore_memory/2` serialize a capped page with the region so it survives freeze/thaw (bit-identical replay) |
 | **Convoys + the contested market** (§1): ship goods across contested ground for credits; PvP | `build`-style intent (code 30) loads a convoy (`World.launch_convoy/2`); the `Sim` auto-pilots it to the market and sells it for `credits`; when enemy convoys share a cell the lower-id one seizes the shipment (`Sim.resolve_market/1`). Bases are never attacked — the stake is only the shipment (§1) |
+| **Cross-region border handoff** (§4): a convoy migrates between region processes | opt-in via `ensure_region(id, neighbor: "market")`. A convoy reaching a bordered region's edge is removed and cast to the neighbor (`Region.receive_convoy/2`); selling there casts a credit-back to the origin region (`Region.credit/3`). Two-phase, async (no Region→Region calls → no deadlock). The default (neighbor-less) region keeps the fully-deterministic in-world market, preserving bit-identical replay |
 
 ## Persistence (surviving deploys)
 
@@ -239,10 +240,11 @@ persisted snapshot, so a shared game survives deploys.
 
 ## Not yet built (next milestones, per the primer)
 
-- **Border-crossing handoff between region processes** (§4): convoys + the
-  contested market are in (above), but the market currently lives *within* each
-  region's world. Promoting it to a separate region the convoy migrates into,
-  with a two-phase handoff between sim processes, is the remaining §4 piece.
+- Wiring the cross-region handoff into the default browser flow. The mechanism
+  is built + tested (above), but enabling a `main → market` topology would make
+  the main game's timeline cross-region (and so only replayable from its event
+  log, not bit-identically from seeds). Left opt-in deliberately; closing that
+  gap means leaning on the event log (§8) as the replay source of record.
 - Analytical fast-forward of warm regions (§5): warm regions currently tick
   slowly rather than computing a closed-form jump. The Forge's refining is
   rate-based (closed-form) so the *production* side is fast-forwardable; the

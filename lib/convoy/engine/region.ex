@@ -36,9 +36,10 @@ defmodule Convoy.Engine.Region do
 
   @default_tick_ms 400
   @snapshot_every 50
-  # Bumped to 4: snapshots now also carry each player's wasm linear memory
-  # (player Memory, primer §8). v3 = the Forge bases shape.
-  @snapshot_version 4
+  # Bumped to 5: world gained cross-region border-crossing fields (neighbor +
+  # departing/pending_credits outboxes, primer §4). v4 = player Memory in the
+  # snapshot; v3 = the Forge bases shape.
+  @snapshot_version 5
 
   # Scale-to-zero activation (primer §5). A running region with no spectators is
   # **warm**: it still advances (it's a persistent world) but ticks much more
@@ -108,6 +109,12 @@ defmodule Convoy.Engine.Region do
   """
   def observe(id, pid), do: GenServer.cast(via(id), {:observe, pid})
 
+  @doc "Deliver a convoy that crossed in from another region (primer §4)."
+  def receive_convoy(id, convoy), do: GenServer.cast(via(id), {:receive_convoy, convoy})
+
+  @doc "Credit a player here for a shipment that sold in another region (credit-back, §4)."
+  def credit(id, owner, amount), do: GenServer.cast(via(id), {:credit, owner, amount})
+
   def play(id), do: GenServer.cast(via(id), :play)
   def pause(id), do: GenServer.cast(via(id), :pause)
   def step(id), do: GenServer.cast(via(id), :step)
@@ -126,10 +133,11 @@ defmodule Convoy.Engine.Region do
     id = Keyword.fetch!(opts, :id)
     seed = Keyword.get(opts, :seed, 1)
     persist = Keyword.get(opts, :persist, false)
+    neighbor = Keyword.get(opts, :neighbor)
 
     state =
       id
-      |> default_state(seed, persist)
+      |> default_state(seed, persist, neighbor)
       |> maybe_restore()
 
     state = if state.status == :running, do: schedule_tick(state), else: state
@@ -192,6 +200,30 @@ defmodule Convoy.Engine.Region do
     state = %{state | observers: MapSet.put(state.observers, ref)}
     # First spectator on a running region: snap warm -> hot (reschedule faster).
     state = if was_idle, do: reschedule(state), else: state
+    {:noreply, state}
+  end
+
+  # A convoy crossed in from another region (primer §4, phase 2 of the handoff).
+  def handle_cast({:receive_convoy, convoy}, state) do
+    world = World.receive_convoy(state.world, convoy)
+    state = %{state | world: world}
+
+    Convoy.EventLog.append(state.id, world.tick, :arrival, %{
+      player: convoy.owner,
+      cargo: convoy.cargo,
+      from: convoy.origin_region
+    })
+
+    persist_now(state)
+    broadcast(state)
+    {:noreply, state}
+  end
+
+  # A shipment that originated here sold in another region — credit it back.
+  def handle_cast({:credit, owner, amount}, state) do
+    state = %{state | world: World.credit_market(state.world, owner, amount)}
+    persist_now(state)
+    broadcast(state)
     {:noreply, state}
   end
 
@@ -330,7 +362,31 @@ defmodule Convoy.Engine.Region do
         {{e.id, intent}, acc + used}
       end)
 
-    %{state | world: Sim.apply_intents(world, intents), last_fuel: fuel}
+    world = Sim.apply_intents(world, intents)
+    # Drain this tick's cross-region outbox into casts to the neighbor / origin
+    # regions (primer §4 border handoff + credit-back). Empty for a region with
+    # no neighbor, so single-region play does no extra work.
+    {departing, credits, world} = World.take_outbox(world)
+    dispatch_outbox(departing, credits)
+    %{state | world: world, last_fuel: fuel}
+  end
+
+  # Phase 2 of the handoff and the credit-back. Both are asynchronous casts —
+  # never synchronous Region→Region calls — so regions can't deadlock on each
+  # other. `ensure_region` brings a cold destination hot first.
+  defp dispatch_outbox([], []), do: :ok
+
+  defp dispatch_outbox(departing, credits) do
+    Enum.each(departing, fn %{to: to, convoy: convoy} ->
+      Convoy.Engine.ensure_region(to, persist: true)
+      play(to)
+      receive_convoy(to, convoy)
+    end)
+
+    Enum.each(credits, fn %{region: region, owner: owner, amount: amount} ->
+      Convoy.Engine.ensure_region(region, persist: true)
+      credit(region, owner, amount)
+    end)
   end
 
   defp decide_for(%{wasm: inst}, e, world, budget) when not is_nil(inst) do
@@ -372,10 +428,10 @@ defmodule Convoy.Engine.Region do
   # --- initial state + restore ---
 
   # A fresh region has no players — it's an empty world waiting for submissions.
-  defp default_state(id, seed, persist) do
+  defp default_state(id, seed, persist, neighbor) do
     %State{
       id: id,
-      world: World.generate(seed: seed, region_id: id),
+      world: World.generate(seed: seed, region_id: id, neighbor: neighbor),
       players: %{},
       status: :paused,
       tick_ms: @default_tick_ms,
@@ -445,7 +501,7 @@ defmodule Convoy.Engine.Region do
   end
 
   defp rebuild_world(seed, state) do
-    fresh = World.generate(seed: seed, region_id: state.id)
+    fresh = World.generate(seed: seed, region_id: state.id, neighbor: state.world.neighbor)
     # generate already seeded the default player; add the rest back.
     Enum.reduce(Map.keys(state.players), fresh, fn pid, world ->
       World.add_player(world, pid)
