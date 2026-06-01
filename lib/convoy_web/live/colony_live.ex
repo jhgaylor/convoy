@@ -370,7 +370,7 @@ defmodule ConvoyWeb.ColonyLive do
 
   defp grid(assigns) do
     ~H"""
-    <div class="inline-grid gap-px bg-slate-800 p-px rounded-lg border border-slate-700" style={"grid-template-columns: repeat(#{@width}, minmax(0, 1fr)); max-width: #{@max};"}>
+    <div class="grid w-full gap-px bg-slate-800 p-px rounded-lg border border-slate-700" style={"grid-template-columns: repeat(#{@width}, minmax(0, 1fr)); max-width: #{@max};"}>
       <%= for c <- @cells do %>
         <div class={["aspect-square flex items-center justify-center text-[10px] relative", c.bg]} title={c.title}>{c.glyph}</div>
       <% end %>
