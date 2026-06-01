@@ -269,6 +269,8 @@ defmodule Convoy.Engine.Region do
 
     {intents, fuel} =
       world.entities
+      # Convoys are auto-piloted by the Sim — only harvesters run player code.
+      |> Enum.filter(&(&1.kind == :harvester))
       |> Enum.sort_by(& &1.id)
       |> Enum.map_reduce(0, fn e, acc ->
         budget = World.fuel_budget(world, e.owner)

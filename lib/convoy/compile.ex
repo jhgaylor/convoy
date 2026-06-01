@@ -139,11 +139,13 @@ defmodule Convoy.Compile do
     export function decide(
       cargo: i32, cargoMax: i32, atBase: i32, onResource: i32,
       resDx: i32, resDy: i32, baseDx: i32, baseDy: i32, tick: i32,
-      baseOre: i32, baseGoods: i32, canRefine: i32, canCargo: i32, canFuel: i32
+      baseOre: i32, baseGoods: i32, canRefine: i32, canCargo: i32, canFuel: i32,
+      canLaunch: i32
     ): i32 {
       if (atBase && cargo > 0) return 2; // unload into the forge
-      if (atBase) {                      // empty-handed at base: climb the tech ladder
-        if (canRefine) return 20;        //   faster refining
+      if (atBase) {                      // empty-handed at base:
+        if (canLaunch) return 30;        //   ship a convoy to market for credits
+        if (canRefine) return 20;        //   else climb the tech ladder: refining
         if (canCargo)  return 21;        //   bigger cargo
         if (canFuel)   return 22;        //   more fuel budget
       }
@@ -167,10 +169,12 @@ defmodule Convoy.Compile do
         cargo: i32, cargo_max: i32, at_base: i32, on_resource: i32,
         _res_dx: i32, _res_dy: i32, _base_dx: i32, _base_dy: i32, _tick: i32,
         _base_ore: i32, _base_goods: i32, can_refine: i32, can_cargo: i32, can_fuel: i32,
+        can_launch: i32,
     ) -> i32 {
         if at_base != 0 && cargo > 0 { return 2; } // unload into the forge
-        if at_base != 0 {                          // empty at base: climb the tech ladder
-            if can_refine != 0 { return 20; }      //   faster refining
+        if at_base != 0 {                          // empty at base:
+            if can_launch != 0 { return 30; }      //   ship a convoy to market for credits
+            if can_refine != 0 { return 20; }      //   else climb the tech ladder: refining
             if can_cargo != 0  { return 21; }      //   bigger cargo
             if can_fuel != 0   { return 22; }      //   more fuel budget
         }
@@ -188,13 +192,16 @@ defmodule Convoy.Compile do
 
     //export decide
     func decide(cargo, cargoMax, atBase, onResource, resDx, resDy, baseDx, baseDy, tick,
-    \tbaseOre, baseGoods, canRefine, canCargo, canFuel int32) int32 {
+    \tbaseOre, baseGoods, canRefine, canCargo, canFuel, canLaunch int32) int32 {
     \tif atBase != 0 && cargo > 0 {
     \t\treturn 2 // unload into the forge
     \t}
-    \tif atBase != 0 { // empty at base: climb the tech ladder
+    \tif atBase != 0 { // empty at base
+    \t\tif canLaunch != 0 {
+    \t\t\treturn 30 // ship a convoy to market for credits
+    \t\t}
     \t\tif canRefine != 0 {
-    \t\t\treturn 20 // faster refining
+    \t\t\treturn 20 // else climb the tech ladder: faster refining
     \t\t}
     \t\tif canCargo != 0 {
     \t\t\treturn 21 // bigger cargo
@@ -236,6 +243,7 @@ defmodule Convoy.Compile do
         can_refine: i32,
         can_cargo: i32,
         can_fuel: i32,
+        can_launch: i32,
     ) i32 {
         _ = res_dx;
         _ = res_dy;
@@ -245,8 +253,9 @@ defmodule Convoy.Compile do
         _ = base_ore;
         _ = base_goods;
         if (at_base != 0 and cargo > 0) return 2; // unload into the forge
-        if (at_base != 0) { // empty at base: climb the tech ladder
-            if (can_refine != 0) return 20; // faster refining
+        if (at_base != 0) { // empty at base
+            if (can_launch != 0) return 30; // ship a convoy to market for credits
+            if (can_refine != 0) return 20; // else climb the tech ladder: faster refining
             if (can_cargo != 0) return 21; // bigger cargo
             if (can_fuel != 0) return 22; // more fuel budget
         }
@@ -264,11 +273,13 @@ defmodule Convoy.Compile do
     int decide(
         int cargo, int cargo_max, int at_base, int on_resource,
         int res_dx, int res_dy, int base_dx, int base_dy, int tick,
-        int base_ore, int base_goods, int can_refine, int can_cargo, int can_fuel
+        int base_ore, int base_goods, int can_refine, int can_cargo, int can_fuel,
+        int can_launch
     ) {
       if (at_base && cargo > 0) return 2; // unload into the forge
-      if (at_base) {                      // empty at base: climb the tech ladder
-        if (can_refine) return 20;        //   faster refining
+      if (at_base) {                      // empty at base:
+        if (can_launch) return 30;        //   ship a convoy to market for credits
+        if (can_refine) return 20;        //   else climb the tech ladder: refining
         if (can_cargo)  return 21;        //   bigger cargo
         if (can_fuel)   return 22;        //   more fuel budget
       }

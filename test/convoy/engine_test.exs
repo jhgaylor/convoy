@@ -54,7 +54,14 @@ defmodule Convoy.EngineTest do
     total = World.ore_remaining(initial)
 
     final = Sim.run(initial, rules, 150)
-    in_cargo = final.entities |> Enum.map(& &1.cargo) |> Enum.sum()
+    # Only harvester cargo is ore; a convoy's cargo is a credit-value shipment,
+    # not raw ore, so it doesn't enter the ore balance.
+    in_cargo =
+      final.entities
+      |> Enum.filter(&(&1.kind == :harvester))
+      |> Enum.map(& &1.cargo)
+      |> Enum.sum()
+
     spawned = final.replenished * World.resource_amount()
 
     # Delivered ore now splits into raw stockpile + lifetime-refined; every ore
@@ -179,5 +186,56 @@ defmodule Convoy.EngineTest do
     assert a == b
     # the default bot forges, so the run actually exercises the tech ladder.
     assert World.base(a, "p1").tech.refine > 0
+  end
+
+  # --- convoys + the contested market (primer §1, §4) ---
+
+  # A decider whose harvesters idle, so only the convoy auto-pilot runs.
+  defp idle_harvesters, do: fn _e, _w -> :idle end
+
+  test "launching a convoy spends goods and spawns a market-bound convoy" do
+    world = solo(1) |> grant_goods("p1", World.shipment_size())
+    assert World.can_launch?(world, "p1")
+
+    world = World.launch_convoy(world, "p1")
+    assert World.base(world, "p1").goods == 0
+
+    assert [convoy] = World.convoys(world)
+    assert convoy.owner == "p1"
+    assert convoy.kind == :convoy
+    assert convoy.cargo == World.shipment_value()
+  end
+
+  test "a convoy runs to the market and sells its shipment for credits" do
+    world = solo(1) |> grant_goods("p1", World.shipment_size()) |> World.launch_convoy("p1")
+
+    # The map is 16x12, market at the far corner — 60 ticks is ample to arrive.
+    final = Sim.run(world, idle_harvesters(), 60)
+
+    assert World.convoys(final) == []
+    assert World.credits(final, "p1") == World.shipment_value()
+  end
+
+  test "when two players' convoys meet, the lower-id one seizes the shipment (PvP)" do
+    world =
+      World.generate(seed: 1)
+      |> World.add_player("p1")
+      |> World.add_player("p2")
+      |> grant_goods("p1", World.shipment_size())
+      |> grant_goods("p2", World.shipment_size())
+      |> World.launch_convoy("p1")
+      |> World.launch_convoy("p2")
+
+    # Both spawn at the shared base and step toward the market together, so they
+    # share a cell — the lower-id convoy ambushes the other.
+    final = Sim.run(world, idle_harvesters(), 1)
+
+    assert [survivor] = World.convoys(final)
+    assert survivor.cargo == 2 * World.shipment_value()
+  end
+
+  test "the default bot ships convoys to market over a long run (credits accrue)" do
+    final = solo(7) |> Sim.run(rules(), 600)
+    assert World.credits(final, "p1") > 0
   end
 end

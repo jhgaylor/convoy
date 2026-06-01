@@ -17,9 +17,16 @@ defmodule Convoy.Engine.World do
 
   @type player_id :: String.t()
 
+  @typedoc """
+  A grid entity. `kind` is `:harvester` (player-controlled, mines/forges) or
+  `:convoy` (auto-piloted shipment that runs to the market — see the Convoy
+  section). A convoy's `cargo` is the goods it carries; `cargo_max` is unused
+  for it.
+  """
   @type entity :: %{
           id: pos_integer(),
           owner: player_id(),
+          kind: :harvester | :convoy,
           x: non_neg_integer(),
           y: non_neg_integer(),
           cargo: non_neg_integer(),
@@ -30,15 +37,17 @@ defmodule Convoy.Engine.World do
   @typedoc """
   A player's **base** — the Forge economy (primer §1). Delivered ore lands in
   `ore` (raw stockpile), the base refines it into `goods` at a tech-driven rate
-  each tick, and `goods` are spent to climb the tech ladder. `refined_total` is
-  the lifetime amount refined — the leaderboard score, monotonic, untouched by
-  spending so the tech climb never costs you rank.
+  each tick, and `goods` are spent to climb the tech ladder or **loaded onto a
+  convoy** and run to the market for `credits` (primer §1). `refined_total`
+  (lifetime refined) and `credits` (lifetime shipment payoff) are both monotonic
+  scores, untouched by spending.
   """
   @type tech :: :refine | :cargo | :fuel
   @type base :: %{
           ore: non_neg_integer(),
           goods: non_neg_integer(),
           refined_total: non_neg_integer(),
+          credits: non_neg_integer(),
           tech: %{tech() => non_neg_integer()}
         }
 
@@ -48,6 +57,7 @@ defmodule Convoy.Engine.World do
             height: 12,
             tick: 0,
             base: {0, 0},
+            market: {15, 11},
             resources: %{},
             entities: [],
             bases: %{},
@@ -62,6 +72,7 @@ defmodule Convoy.Engine.World do
           height: pos_integer(),
           tick: non_neg_integer(),
           base: pos(),
+          market: pos(),
           resources: %{pos() => non_neg_integer()},
           entities: [entity()],
           bases: %{player_id() => base()},
@@ -75,6 +86,18 @@ defmodule Convoy.Engine.World do
   @harvesters 3
   @cargo_max 5
   @default_player "p1"
+
+  # --- convoys + the contested market (primer §1, §4) ---
+  #
+  # Goods can be loaded onto a convoy and run across the map to the market. A
+  # convoy is an auto-piloted entity; reaching the market sells its shipment for
+  # `credits`. The market is the only contested ground — when two players'
+  # convoys meet on a cell, the lower-id one seizes the other's shipment (PvP).
+  # Bases are never attacked; the stake of a fight is only the shipment (§1).
+  @shipment_size 20
+  # Successful delivery pays a premium over the goods spent — the reward for
+  # risking the contested run instead of hoarding at base.
+  @shipment_value 30
 
   # --- the Forge: refining + tech ladder (primer §1) ---
   #
@@ -106,6 +129,9 @@ defmodule Convoy.Engine.World do
     width = Keyword.get(opts, :width, 16)
     height = Keyword.get(opts, :height, 12)
     base = {0, 0}
+    # The market sits at the opposite corner from base — the far end of the
+    # contested run. Deterministic, so replays and layouts stay reproducible.
+    market = {width - 1, height - 1}
 
     {resources, _rng} = place_resources(seed, width, height, base)
 
@@ -119,6 +145,7 @@ defmodule Convoy.Engine.World do
       height: height,
       tick: 0,
       base: base,
+      market: market,
       resources: resources,
       entities: [],
       bases: %{},
@@ -155,6 +182,7 @@ defmodule Convoy.Engine.World do
         entity = %{
           id: id,
           owner: player_id,
+          kind: :harvester,
           x: bx,
           y: by,
           cargo: 0,
@@ -174,8 +202,9 @@ defmodule Convoy.Engine.World do
     }
   end
 
-  # A freshly-joined player's base: empty stockpile, no goods, tech at level 0.
-  defp new_base, do: %{ore: 0, goods: 0, refined_total: 0, tech: %{refine: 0, cargo: 0, fuel: 0}}
+  # A freshly-joined player's base: empty stockpile, no goods/credits, tech L0.
+  defp new_base,
+    do: %{ore: 0, goods: 0, refined_total: 0, credits: 0, tech: %{refine: 0, cargo: 0, fuel: 0}}
 
   @doc """
   Remove a player from the world: drop their harvesters and their score.
@@ -333,6 +362,79 @@ defmodule Convoy.Engine.World do
   defp update_base(%World{} = world, player_id, fun) do
     %{world | bases: Map.update(world.bases, player_id, fun.(new_base()), fun)}
   end
+
+  # --- convoys + the contested market (primer §1, §4) ---
+
+  @doc "The market sell-point — the far end of the contested run."
+  @spec market(t()) :: pos()
+  def market(%World{market: m}), do: m
+
+  @doc "Goods cost to launch a convoy."
+  @spec shipment_size() :: pos_integer()
+  def shipment_size, do: @shipment_size
+
+  @doc "Credits a delivered shipment is worth (a premium over the goods spent)."
+  @spec shipment_value() :: pos_integer()
+  def shipment_value, do: @shipment_value
+
+  @doc "Can a player afford to load a convoy (enough goods for one shipment)?"
+  @spec can_launch?(t(), player_id() | nil) :: boolean()
+  def can_launch?(%World{} = world, player_id), do: base(world, player_id).goods >= @shipment_size
+
+  @doc """
+  Launch a convoy for a player: spend `@shipment_size` goods and spawn an
+  auto-piloted convoy entity at base carrying a shipment worth `@shipment_value`
+  credits. Assumes affordability was checked (`can_launch?/2`).
+  """
+  @spec launch_convoy(t(), player_id()) :: t()
+  def launch_convoy(%World{} = world, player_id) do
+    {bx, by} = world.base
+
+    convoy = %{
+      id: world.next_entity_id,
+      owner: player_id,
+      kind: :convoy,
+      x: bx,
+      y: by,
+      cargo: @shipment_value,
+      cargo_max: @shipment_value,
+      last_action: :launch
+    }
+
+    world
+    |> update_base(player_id, fn b -> %{b | goods: b.goods - @shipment_size} end)
+    |> Map.update!(:entities, &(&1 ++ [convoy]))
+    |> Map.update!(:next_entity_id, &(&1 + 1))
+  end
+
+  @doc "Credit a delivered shipment to a player's lifetime `credits`."
+  @spec credit_market(t(), player_id(), non_neg_integer()) :: t()
+  def credit_market(%World{} = world, player_id, amount) do
+    update_base(world, player_id, fn b -> %{b | credits: b.credits + amount} end)
+  end
+
+  @doc "A player's lifetime market credits (0 if unknown)."
+  @spec credits(t(), player_id()) :: non_neg_integer()
+  def credits(%World{} = world, player_id), do: base(world, player_id).credits
+
+  @doc "Lifetime credits earned across all players."
+  @spec total_credits(t()) :: non_neg_integer()
+  def total_credits(%World{bases: bases}),
+    do: bases |> Map.values() |> Enum.map(& &1.credits) |> Enum.sum()
+
+  @doc "Is this entity a convoy?"
+  @spec convoy?(entity()) :: boolean()
+  def convoy?(%{kind: :convoy}), do: true
+  def convoy?(_), do: false
+
+  @doc "All convoy entities, sorted by id (deterministic)."
+  @spec convoys(t()) :: [entity()]
+  def convoys(%World{entities: es}), do: es |> Enum.filter(&convoy?/1) |> Enum.sort_by(& &1.id)
+
+  @doc "Remove an entity by id (a convoy that sold or was seized)."
+  @spec remove_entity(t(), pos_integer()) :: t()
+  def remove_entity(%World{} = world, id),
+    do: %{world | entities: Enum.reject(world.entities, &(&1.id == id))}
 
   @doc "The ore amount a freshly-spawned (or generated) deposit holds."
   @spec resource_amount() :: pos_integer()

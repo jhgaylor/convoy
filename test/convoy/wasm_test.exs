@@ -49,7 +49,7 @@ defmodule Convoy.WasmTest do
     spinner = """
     (module
       (func (export "decide")
-        (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)
+        (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)
         (loop $l (br $l))
         (i32.const 4)))
     """
@@ -65,7 +65,7 @@ defmodule Convoy.WasmTest do
     Wasm.stop(instance)
   end
 
-  @abi "(param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)"
+  @abi "(param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)"
 
   # primer §7 — fuel bounds CPU; StoreLimits bounds allocation. A module
   # demanding more linear memory than the cap is rejected at instantiation,
@@ -168,6 +168,16 @@ defmodule Convoy.WasmTest do
 
     assert {:ok, {:build, :refine}, used} = Wasm.decide(inst, e, world, 50_000)
     assert used > 0
+    Wasm.stop(inst)
+  end
+
+  test "convoy launch code (30) maps to a :launch intent over the ABI" do
+    launcher = "(module (func (export \"decide\") #{@abi} (i32.const 30)))"
+    {:ok, inst} = Wasm.instantiate(launcher)
+    world = World.generate(seed: 1) |> World.add_player("p1")
+    e = hd(world.entities)
+
+    assert {:ok, :launch, _used} = Wasm.decide(inst, e, world, 50_000)
     Wasm.stop(inst)
   end
 

@@ -16,7 +16,8 @@ defmodule Convoy.Engine.Wasm do
 
       decide(cargo, cargo_max, at_base, on_resource,
              res_dx, res_dy, base_dx, base_dy, tick,
-             base_ore, base_goods, can_refine, can_cargo, can_fuel) -> i32
+             base_ore, base_goods, can_refine, can_cargo, can_fuel,
+             can_launch) -> i32
 
   - `at_base`, `on_resource`: 0/1 flags
   - `res_dx`/`res_dy`: sign (-1/0/1) of the step toward the nearest ore
@@ -25,6 +26,7 @@ defmodule Convoy.Engine.Wasm do
   - `base_goods`: refined goods you can spend on upgrades
   - `can_refine`/`can_cargo`/`can_fuel`: 0/1 — can you afford the next level of
     that tech right now? (The host owns the cost math; you just check the flag.)
+  - `can_launch`: 0/1 — can you afford to load a convoy and ship it to market?
 
   The returned `i32` is an **intent code** the host resolves authoritatively
   (the player can never mutate the world — primer §3):
@@ -39,6 +41,7 @@ defmodule Convoy.Engine.Wasm do
   | 6 | move toward the resource farthest from base |
   | 10/11/12/13 | move +x / -x / +y / -y |
   | 20/21/22 | build refine / cargo / fuel (only at base, if affordable) |
+  | 30 | launch a convoy to market (only at base, if affordable) |
   | anything else (incl. 0) | idle |
 
   ## The Forge (primer §1)
@@ -83,10 +86,10 @@ defmodule Convoy.Engine.Wasm do
   }
 
   @default_wat """
-  ;; Default harvester + forge, written in WebAssembly. It harvests ore, delivers
-  ;; it to the base, and spends the refined goods to climb the tech ladder.
-  ;; Compile your own (Rust, TinyGo, AssemblyScript, Zig, C, or WAT) to a `decide`
-  ;; export with the ABI in the docs, and it runs under the same fuel budget.
+  ;; Default harvester + forge + convoy, in WebAssembly. It harvests ore,
+  ;; delivers it to the base, ships goods to market for credits, and spends what
+  ;; it can on the tech ladder. Compile your own (Rust, TinyGo, AssemblyScript,
+  ;; Zig, C, or WAT) to a `decide` export with the ABI in the docs.
   (module
     (func (export "decide")
       (param $cargo i32) (param $cargo_max i32)
@@ -96,16 +99,19 @@ defmodule Convoy.Engine.Wasm do
       (param $tick i32)
       (param $base_ore i32) (param $base_goods i32)
       (param $can_refine i32) (param $can_cargo i32) (param $can_fuel i32)
+      (param $can_launch i32)
       (result i32)
 
       ;; at base, carrying cargo -> unload it into the forge (2)
       (if (i32.and (local.get $at_base) (i32.gt_s (local.get $cargo) (i32.const 0)))
         (then (return (i32.const 2))))
 
-      ;; at base, empty-handed -> spend goods on the cheapest affordable upgrade
-      ;; (refine 20 > cargo 21 > fuel 22); falls through to harvest if broke.
+      ;; at base, empty-handed -> ship a convoy to market if we can (30), else
+      ;; spend goods on the cheapest affordable upgrade (refine 20 > cargo 21 >
+      ;; fuel 22); falls through to harvest if broke.
       (if (local.get $at_base)
         (then
+          (if (local.get $can_launch) (then (return (i32.const 30))))
           (if (local.get $can_refine) (then (return (i32.const 20))))
           (if (local.get $can_cargo)  (then (return (i32.const 21))))
           (if (local.get $can_fuel)   (then (return (i32.const 22))))))
@@ -297,7 +303,8 @@ defmodule Convoy.Engine.Wasm do
       base.goods,
       bool(World.can_build?(world, owner, :refine)),
       bool(World.can_build?(world, owner, :cargo)),
-      bool(World.can_build?(world, owner, :fuel))
+      bool(World.can_build?(world, owner, :fuel)),
+      bool(World.can_launch?(world, owner))
     ]
   end
 
@@ -322,6 +329,8 @@ defmodule Convoy.Engine.Wasm do
   defp code_to_intent(20, _e, _w), do: {:build, :refine}
   defp code_to_intent(21, _e, _w), do: {:build, :cargo}
   defp code_to_intent(22, _e, _w), do: {:build, :fuel}
+  # Load a convoy of goods and send it to the contested market (primer §1).
+  defp code_to_intent(30, _e, _w), do: :launch
   defp code_to_intent(_other, _e, _w), do: :idle
 
   # Step toward a target resource (or home if the map is empty).

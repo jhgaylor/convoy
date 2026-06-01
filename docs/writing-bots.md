@@ -22,7 +22,8 @@ That second rule is why some languages are a great fit and others aren't (see
 ```
 decide(cargo, cargo_max, at_base, on_resource,
        res_dx, res_dy, base_dx, base_dy, tick,
-       base_ore, base_goods, can_refine, can_cargo, can_fuel) -> code
+       base_ore, base_goods, can_refine, can_cargo, can_fuel,
+       can_launch) -> code
 ```
 
 | param | meaning |
@@ -34,8 +35,9 @@ decide(cargo, cargo_max, at_base, on_resource,
 | `base_dx`, `base_dy` | direction (−1/0/1) to base |
 | `tick` | the current tick number |
 | `base_ore` | raw ore in your base, waiting to be refined |
-| `base_goods` | refined goods you can spend on upgrades |
+| `base_goods` | refined goods you can spend on upgrades or shipments |
 | `can_refine`, `can_cargo`, `can_fuel` | 1 if you can afford the next level of that tech right now, else 0 |
+| `can_launch` | 1 if you can afford to load a convoy and ship it to market, else 0 |
 
 Return one of these intent codes:
 
@@ -49,6 +51,7 @@ Return one of these intent codes:
 | `6` | move toward the resource farthest from base |
 | `10` / `11` / `12` / `13` | move +x / −x / +y / −y |
 | `20` / `21` / `22` | build refine / cargo / fuel (only at base, if affordable) |
+| `30` | launch a convoy to the market (only at base, if affordable) |
 | anything else (incl. `0`) | idle |
 
 Codes `3`/`4`/`6` let the sim do the pathfinding; `10`–`13` move one step in a
@@ -76,6 +79,24 @@ You don't need to know the prices — the sim hands you `can_refine` / `can_carg
 next level. A common opening: harvest a few loads, then start funnelling goods
 into `refine` so the rest of the game compounds. The trade-off is yours to
 program: pour into one tech, or spread across all three?
+
+## Convoys & the contested market
+
+Goods aren't only for upgrades — you can **ship them to market** for credits,
+the headline score. When `can_launch` is 1 (you have enough goods for a
+shipment), returning `30` at base loads a **convoy** and sends it off.
+
+A convoy is auto-piloted: it crosses the map to the market on its own, and on
+arrival its shipment sells for credits (a premium over the goods you spent — the
+reward for making the run). You don't steer it; the strategy is **when** to ship
+versus hoard or upgrade.
+
+The market is the **only contested ground** (primer §1). When two players'
+convoys land on the same cell, the lower-id one **seizes** the other's
+shipment — a deterministic ambush. Bases are never attacked; the stake of a
+fight is only the shipment in transit, never your progress. So the tension is
+timing: ship early and often, or build throughput first and run bigger, riskier
+convoys later.
 
 ## Persistent memory
 

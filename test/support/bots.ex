@@ -10,13 +10,14 @@ defmodule Convoy.Bots do
   """
   alias Convoy.Engine.World
 
-  # The decide ABI: 14 i32 params in, one i32 out (see Convoy.Engine.Wasm).
-  @abi "(param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)"
+  # The decide ABI: 15 i32 params in, one i32 out (see Convoy.Engine.Wasm).
+  @abi "(param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)"
 
   @doc """
-  Canonical harvester + forge behaviour, matching the default WAT module: it
-  harvests ore, delivers it, and spends refined goods to climb the tech ladder
-  (refine > cargo > fuel) whenever it's standing on the base empty-handed.
+  Canonical harvester + forge + convoy behaviour, matching the default WAT
+  module: it harvests ore, delivers it, and when standing at base empty-handed
+  ships a convoy to market if it can, else climbs the tech ladder
+  (refine > cargo > fuel).
   """
   def harvester(entity, world) do
     pos = {entity.x, entity.y}
@@ -24,15 +25,16 @@ defmodule Convoy.Bots do
 
     cond do
       pos == world.base and entity.cargo > 0 -> :unload
-      pos == world.base -> build_or_seek(world, owner, pos)
+      pos == world.base -> at_base(world, owner, pos)
       entity.cargo >= entity.cargo_max -> {:move, World.step_toward(pos, world.base)}
       World.resource_at(world, pos) > 0 -> :harvest
       true -> seek(pos, World.nearest_resource(world, pos), world.base)
     end
   end
 
-  defp build_or_seek(world, owner, pos) do
+  defp at_base(world, owner, pos) do
     cond do
+      World.can_launch?(world, owner) -> :launch
       World.can_build?(world, owner, :refine) -> {:build, :refine}
       World.can_build?(world, owner, :cargo) -> {:build, :cargo}
       World.can_build?(world, owner, :fuel) -> {:build, :fuel}

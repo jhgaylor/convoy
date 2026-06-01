@@ -4,7 +4,8 @@ defmodule Convoy.Engine.Render do
   LiveView grid, so `convoy.run --headless` can show a bot running without a
   browser.
 
-  Legend: `B` base · `1..9` harvester (its id) · `*` ore · `·` empty.
+  Legend: `B` base · `M` market · `1..9` harvester (its id) · `C` convoy ·
+  `*` ore · `·` empty.
   """
 
   alias Convoy.Engine.World
@@ -34,14 +35,17 @@ defmodule Convoy.Engine.Render do
 
     scores =
       world.bases
-      |> Enum.sort_by(fn {_p, b} -> -b.refined_total end)
+      |> Enum.sort_by(fn {_p, b} -> -b.credits end)
       |> Enum.map_join("  ", fn {p, b} ->
         t = b.tech
-        "#{p}:#{b.refined_total}(ore #{b.ore}/goods #{b.goods}/R#{t.refine}C#{t.cargo}F#{t.fuel})"
+
+        "#{p}:#{b.credits}cr(refined #{b.refined_total}/goods #{b.goods}/R#{t.refine}C#{t.cargo}F#{t.fuel})"
       end)
 
-    "tick #{world.tick}  refined #{World.total_refined(world)}  stockpile #{World.total_stockpile(world)}  " <>
-      "in-cargo #{cargo}  ore-left #{World.ore_remaining(world)}\nbases  #{scores}"
+    convoys = World.convoys(world) |> length()
+
+    "tick #{world.tick}  credits #{World.total_credits(world)}  refined #{World.total_refined(world)}  " <>
+      "in-cargo #{cargo}  convoys #{convoys}  ore-left #{World.ore_remaining(world)}\nbases  #{scores}"
   end
 
   defp events(%World{events: []}), do: ""
@@ -54,10 +58,20 @@ defmodule Convoy.Engine.Render do
 
   defp cell(world, pos) do
     cond do
-      entity = entity_at(world, pos) -> Integer.to_string(rem(entity.id, 10))
-      pos == world.base -> "B"
-      World.resource_at(world, pos) > 0 -> "*"
-      true -> "·"
+      entity = entity_at(world, pos) ->
+        if World.convoy?(entity), do: "C", else: Integer.to_string(rem(entity.id, 10))
+
+      pos == world.base ->
+        "B"
+
+      pos == World.market(world) ->
+        "M"
+
+      World.resource_at(world, pos) > 0 ->
+        "*"
+
+      true ->
+        "·"
     end
   end
 

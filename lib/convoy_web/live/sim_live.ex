@@ -249,6 +249,7 @@ defmodule ConvoyWeb.SimLive do
         </div>
         <div class="flex items-center gap-4 text-sm">
           <.stat label="tick" value={@world.tick} />
+          <.stat label="credits" value={World.total_credits(@world)} accent="text-yellow-300" />
           <.stat label="refined" value={World.total_refined(@world)} accent="text-emerald-400" />
           <.stat label="ore left" value={World.ore_remaining(@world)} accent="text-amber-400" />
           <.stat label="players" value={map_size(@scores)} accent="text-sky-400" />
@@ -507,14 +508,14 @@ defmodule ConvoyWeb.SimLive do
     ~H"""
     <div class="bg-slate-900 border border-slate-800 rounded-lg p-3">
       <div class="flex items-center justify-between mb-2">
-        <div class="text-xs uppercase tracking-wide text-slate-400">Players · the Forge</div>
-        <div class="text-[10px] text-slate-500 font-mono">refined · goods · ore · R/C/F tech</div>
+        <div class="text-xs uppercase tracking-wide text-slate-400">Players · Forge &amp; Convoy</div>
+        <div class="text-[10px] text-slate-500 font-mono">goods · R/C/F tech · refined · credits</div>
       </div>
       <%= if @bases == %{} do %>
         <div class="text-xs text-slate-500">No players yet — submit a bot to join.</div>
       <% end %>
       <div class="space-y-1">
-        <%= for {player, base} <- Enum.sort_by(@bases, fn {_p, b} -> -b.refined_total end) do %>
+        <%= for {player, base} <- Enum.sort_by(@bases, fn {_p, b} -> {-b.credits, -b.refined_total} end) do %>
           <% color = player_color(player) %>
           <div class="flex items-center gap-2 text-sm">
             <span class={["w-2.5 h-2.5 rounded-full", color.dot]}></span>
@@ -528,16 +529,13 @@ defmodule ConvoyWeb.SimLive do
               ⛔
             </span>
             <span class="ml-auto flex items-center gap-2 font-mono text-xs">
-              <span class="text-slate-500" title="raw ore stockpile">⛏ {base.ore}</span>
               <span class="text-sky-300" title="refined goods to spend">◆ {base.goods}</span>
               <span class="text-slate-500" title="tech: refine / cargo / fuel">
                 R{base.tech.refine}·C{base.tech.cargo}·F{base.tech.fuel}
               </span>
-              <span
-                class="font-bold text-emerald-300 w-12 text-right"
-                title="lifetime refined (score)"
-              >
-                {base.refined_total}
+              <span class="text-emerald-300" title="lifetime refined">⚒ {base.refined_total}</span>
+              <span class="font-bold text-yellow-300 w-14 text-right" title="market credits (score)">
+                🏪 {base.credits}
               </span>
             </span>
           </div>
@@ -577,14 +575,23 @@ defmodule ConvoyWeb.SimLive do
     ~H"""
     <div class="grid grid-cols-3 gap-2">
       <%= for e <- Enum.sort_by(@world.entities, & &1.id) do %>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs">
+        <% convoy? = e.kind == :convoy %>
+        <div class={[
+          "bg-slate-900 border rounded-lg p-2 text-xs",
+          if(convoy?, do: "border-yellow-600/50", else: "border-slate-800")
+        ]}>
           <div class="flex items-center justify-between">
-            <span class={["font-mono", player_color(e.owner).text]}>🤖 {e.owner}/H{e.id}</span>
+            <span class={["font-mono", player_color(e.owner).text]}>
+              {if convoy?, do: "🚚 #{e.owner}/C#{e.id}", else: "🤖 #{e.owner}/H#{e.id}"}
+            </span>
             <span class="text-slate-500">({e.x},{e.y})</span>
           </div>
           <div class="mt-1 flex items-center gap-1">
             <div class="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden">
-              <div class="h-full bg-amber-400" style={"width: #{round(e.cargo / e.cargo_max * 100)}%"}>
+              <div
+                class={["h-full", if(convoy?, do: "bg-yellow-400", else: "bg-amber-400")]}
+                style={"width: #{round(e.cargo / e.cargo_max * 100)}%"}
+              >
               </div>
             </div>
             <span class="font-mono text-amber-300">{e.cargo}/{e.cargo_max}</span>
@@ -625,13 +632,19 @@ defmodule ConvoyWeb.SimLive do
 
     cond do
       here != [] ->
-        owner = here |> Enum.min_by(& &1.id) |> Map.get(:owner)
+        lead = Enum.min_by(here, & &1.id)
+        owner = lead.owner
         owners = here |> Enum.map(& &1.owner) |> Enum.uniq() |> Enum.join(",")
+        convoy? = Enum.any?(here, &(&1.kind == :convoy))
+        glyph = if convoy?, do: "🚚", else: "🤖"
 
-        %{glyph: "🤖", bg: player_color(owner).cell, title: "#{owners} @ #{x},#{y}"}
+        %{glyph: glyph, bg: player_color(owner).cell, title: "#{owners} @ #{x},#{y}"}
 
       pos == world.base ->
         %{glyph: "🏠", bg: "bg-slate-700", title: "Base @ #{x},#{y}"}
+
+      pos == World.market(world) ->
+        %{glyph: "🏪", bg: "bg-yellow-800", title: "Market @ #{x},#{y}"}
 
       ore > 0 ->
         %{glyph: "", bg: ore_bg(ore), title: "Ore: #{ore} @ #{x},#{y}"}

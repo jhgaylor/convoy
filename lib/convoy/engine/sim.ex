@@ -52,6 +52,9 @@ defmodule Convoy.Engine.Sim do
         ]
   def collect_intents(%World{} = world, decide_fun) when is_function(decide_fun, 2) do
     world.entities
+    # Convoys are auto-piloted by the Sim (see move_convoys/1), so only
+    # harvesters run player code.
+    |> Enum.filter(&(&1.kind == :harvester))
     |> Enum.sort_by(& &1.id)
     |> Enum.map(fn entity -> {entity.id, decide_fun.(entity, world)} end)
   end
@@ -66,6 +69,11 @@ defmodule Convoy.Engine.Sim do
     world = Enum.reduce(intents, world, fn {id, intent}, acc -> resolve(acc, id, intent) end)
 
     world
+    # Convoys (primer §1, §4): auto-pilot every convoy one step toward the
+    # market, then resolve the contested market — PvP capture on shared cells,
+    # then delivery. All deterministic (id-order / commutative per cell).
+    |> move_convoys()
+    |> resolve_market()
     # The Forge: every base refines stockpiled ore into goods at its tech rate.
     # Rate-based and deterministic, so warm regions stay fast-forwardable (§5).
     |> World.refine_all()
@@ -166,9 +174,98 @@ defmodule Convoy.Engine.Sim do
     end
   end
 
+  # Load a convoy at the base and send it to the market (primer §1). Only valid
+  # standing on the base with the goods for a shipment.
+  defp resolve(world, id, :launch) do
+    e = entity(world, id)
+
+    if {e.x, e.y} == world.base and World.can_launch?(world, e.owner) do
+      world
+      |> World.launch_convoy(e.owner)
+      |> update_entity(id, &%{&1 | last_action: :launch})
+      |> note("#{e.owner} loaded a convoy — #{World.shipment_size()} goods bound for market.")
+    else
+      update_entity(world, id, &%{&1 | last_action: :idle})
+    end
+  end
+
   defp resolve(world, id, :idle) do
     update_entity(world, id, &%{&1 | last_action: :idle})
   end
+
+  # --- convoys + contested market (primer §1, §4) ---
+
+  # Auto-pilot every convoy one cell toward the market. Convoys aren't player-
+  # controlled; the run itself is automatic, the strategy is when to launch.
+  defp move_convoys(world) do
+    market = World.market(world)
+
+    entities =
+      Enum.map(world.entities, fn e ->
+        if World.convoy?(e) do
+          {dx, dy} = World.step_toward({e.x, e.y}, market)
+          %{e | x: e.x + dx, y: e.y + dy, last_action: :move}
+        else
+          e
+        end
+      end)
+
+    %{world | entities: entities}
+  end
+
+  # The contested moment (primer §1, §4): capture first (an ambush takes the
+  # shipment before it can sell), then deliver. Bases are never touched — combat
+  # only ever happens to a convoy out on the run.
+  defp resolve_market(world) do
+    world |> capture_convoys() |> sell_convoys()
+  end
+
+  # On any cell holding convoys of two or more owners, the lowest-id convoy
+  # seizes the others' shipments and they're destroyed. Per-cell captures are
+  # independent (disjoint entities), so the result is order-independent and
+  # bit-identical regardless of map iteration order.
+  defp capture_convoys(world) do
+    world
+    |> World.convoys()
+    |> Enum.group_by(fn e -> {e.x, e.y} end)
+    |> Enum.reduce(world, fn {cell, group}, acc -> capture_cell(acc, cell, group) end)
+  end
+
+  defp capture_cell(world, cell, group) do
+    distinct_owners = group |> Enum.map(& &1.owner) |> Enum.uniq()
+
+    if length(distinct_owners) >= 2 do
+      [winner | losers] = Enum.sort_by(group, & &1.id)
+      seized = losers |> Enum.map(& &1.cargo) |> Enum.sum()
+
+      world
+      |> update_entity(winner.id, &%{&1 | cargo: &1.cargo + seized, last_action: :seize})
+      |> drop_entities(Enum.map(losers, & &1.id))
+      |> note(
+        "#{winner.owner}/C#{winner.id} ambushed #{length(losers)} convoy(s) at #{fmt(cell)}, seizing #{seized} credits' worth."
+      )
+    else
+      world
+    end
+  end
+
+  # Convoys standing on the market sell their shipment for credits, then leave
+  # the board. Each sale is independent, so order doesn't matter.
+  defp sell_convoys(world) do
+    market = World.market(world)
+
+    world
+    |> World.convoys()
+    |> Enum.filter(fn e -> {e.x, e.y} == market end)
+    |> Enum.reduce(world, fn c, acc ->
+      acc
+      |> World.credit_market(c.owner, c.cargo)
+      |> World.remove_entity(c.id)
+      |> note("#{c.owner}/C#{c.id} delivered a shipment to market (+#{c.cargo} credits).")
+    end)
+  end
+
+  defp drop_entities(world, ids), do: Enum.reduce(ids, world, &World.remove_entity(&2, &1))
 
   # --- helpers ---
 

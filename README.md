@@ -115,6 +115,7 @@ the doc explains why; use AssemblyScript for a scripting feel).
 | **Route a session to its region** (§9) | `ConvoyWeb.SimLive` (spectator) subscribes over PubSub; submits go through `Convoy.Loader` → `Engine.submit_player/5` |
 | **The Forge** (§1): refine harvested ore, climb a rate-based tech ladder | each player has a `base` (`World.bases`): `unload` stocks raw ore, `Sim` refines it to goods each tick (`World.refine_all/1`), and `build` intents (codes 20/21/22) spend goods on **refine / cargo / fuel** tech |
 | **Player Memory** (§8): persistent scratch state between ticks | the wasm instance is reused across ticks, so a bot's linear memory persists live; `Wasm.snapshot_memory/1` + `restore_memory/2` serialize a capped page with the region so it survives freeze/thaw (bit-identical replay) |
+| **Convoys + the contested market** (§1): ship goods across contested ground for credits; PvP | `build`-style intent (code 30) loads a convoy (`World.launch_convoy/2`); the `Sim` auto-pilots it to the market and sells it for `credits`; when enemy convoys share a cell the lower-id one seizes the shipment (`Sim.resolve_market/1`). Bases are never attacked — the stake is only the shipment (§1) |
 
 ## Persistence (surviving deploys)
 
@@ -236,12 +237,13 @@ persisted snapshot, so a shared game survives deploys.
 
 ## Not yet built (next milestones, per the primer)
 
-- Convoys and border-crossing handoff between regions (§4) — the only PvP moment.
+- **Border-crossing handoff between region processes** (§4): convoys + the
+  contested market are in (above), but the market currently lives *within* each
+  region's world. Promoting it to a separate region the convoy migrates into,
+  with a two-phase handoff between sim processes, is the remaining §4 piece.
 - Warm/cold fast-forward (§5) and the event-log half of persistence (§8). The
   Forge's refining is deliberately rate-based so a warm region is
   fast-forwardable; wiring up the fast-forward itself is still to do.
-- More of the Forge: spending tech reaching deeper (e.g. a fleet upgrade), and
-  goods feeding the convoy economy.
 - OS-level sandbox around both the WASM runner *and* the compile service (§7, §10).
 
 ## Tests
