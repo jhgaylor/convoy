@@ -23,6 +23,7 @@ defmodule Convoy.Engine.Colony.Sim do
   @op_transfer 3
   @op_build 4
   @op_spawn 5
+  @op_upgrade 6
   @op_launch 7
 
   @doc "Advance the colony one tick: run the brain, resolve its commands, advance timers/refining."
@@ -138,7 +139,32 @@ defmodule Convoy.Engine.Colony.Sim do
     if World.can_launch?(world), do: World.launch(world), else: world
   end
 
-  # Unknown / idle / upgrade / convoy-steering (handled by the Region) — no-op here.
+  defp resolve(world, %{op: @op_upgrade, target: id}) do
+    b = World.building(world, id)
+    spec = b && World.upgrade_spec(world, b.kind)
+
+    cond do
+      b == nil -> world
+      not b.built -> world # still under construction
+      b.remaining > 0 -> world # an upgrade is already in flight
+      spec == nil -> world # this kind has no levels worth raising
+      b.level >= World.max_level(world) -> world # already maxed
+      true ->
+        {base, time} = spec
+        cost = base * (b.level + 1)
+
+        if world.goods >= cost do
+          world
+          |> World.spend_goods(cost)
+          |> World.start_upgrade(id, time)
+          |> World.note("Upgrading #{World.kind_name(b.kind)} at #{fmt({b.x, b.y})} to level #{b.level + 1} (-#{cost} goods, #{time} ticks).")
+        else
+          world
+        end
+    end
+  end
+
+  # Unknown / idle / convoy-steering (handled by the Region) — no-op here.
   defp resolve(world, _cmd), do: world
 
   # --- replenishment (slow trickle: scarcity that recovers, never a dead end) ---

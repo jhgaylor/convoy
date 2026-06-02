@@ -96,24 +96,28 @@ const OP_MOVE: u32 = 2; // a=dx, b=dy
 const OP_TRANSFER: u32 = 3; // a=destination building id
 const OP_BUILD: u32 = 4; // a=building kind, b=(x<<8 | y)
 const OP_SPAWN: u32 = 5; // a=unit kind
+const OP_UPGRADE: u32 = 6; // target=building id — raise its level (pop cap / throughput)
 const OP_LAUNCH: u32 = 7; // load a convoy and run it to the market for credits
 const OP_HUNT: u32 = 9; // target=our convoy id — raider: a=dx b=dy steer
 
 const UNIT_HARVESTER: u32 = 0;
+const BLD_SPAWNER: u32 = 0;
 const BLD_REFINERY: u32 = 1;
 const PROGRESS_DONE: u32 = 255;
 
-// Engine limits we play to (from world.ex / sim.ex).
-const POP_CAP: usize = 4; // spawner is level-locked → fleet maxes at 4
-const MAX_REFINERIES: u32 = 3; // throughput past ~2 only helps the early burst
+// Engine knobs we play to (from world.ex / sim.ex).
+const POP_CAP_BASE: usize = 4; // pop cap = base + step * spawner_level
+const POP_CAP_STEP: usize = 2;
+const MAX_SPAWNER_LEVEL: u32 = 2; // pop 8 — beyond that the ore-supply wall idles miners
+const MAX_REFINERIES: u32 = 4; // each is also a drop-off → coverage shortens hauls
 const REFINERY_COST: u32 = 40;
+const UPGRADE_BASE: u32 = 30; // upgrade cost = base * (level + 1)
 const SHIPMENT_SIZE: u32 = 20;
 const BASE_SHIPMENT: u32 = 30; // a fresh convoy's cargo (host shipment_value)
 
 // View header offsets.
 const H_WIDTH: usize = 4;
 const H_HEIGHT: usize = 6;
-const H_ORE: usize = 8;
 const H_GOODS: usize = 12;
 const H_N_UNITS: usize = 20;
 const H_N_BUILDINGS: usize = 22;
@@ -164,7 +168,6 @@ fn colony_logic(out: &mut Out) {
     let n_dep = rd_u16(H_N_DEPOSITS) as usize;
     let n_mkt = rd_u16(H_N_MARKET) as usize;
     let goods = rd_u32(H_GOODS);
-    let ore = rd_u32(H_ORE);
 
     let units = ARRAYS;
     let bld = units + n_units * UNIT_SZ;
@@ -177,13 +180,18 @@ fn colony_logic(out: &mut Out) {
     let mut refinery_building = false;
     let mut spawner_x: u32 = 0;
     let mut spawner_y: u32 = 0;
+    let mut spawner_id: u32 = 0;
+    let mut spawner_level: u32 = 0;
     for b in 0..n_bld {
         let o = bld + b * BLD_SZ;
         let kind = rd_u8(o + 4);
+        let level = rd_u8(o + 7);
         let prog = rd_u8(o + 8);
-        if kind == 0 {
+        if kind == BLD_SPAWNER {
             spawner_x = rd_u8(o + 5);
             spawner_y = rd_u8(o + 6);
+            spawner_id = rd_u32(o);
+            spawner_level = level;
         }
         if kind == BLD_REFINERY {
             if prog >= PROGRESS_DONE {
@@ -193,6 +201,8 @@ fn colony_logic(out: &mut Out) {
             }
         }
     }
+    // Pop cap rises with the spawner's level (matches World.pop_cap).
+    let pop_cap = POP_CAP_BASE + POP_CAP_STEP * spawner_level as usize;
 
     // --- harvesters: full → haul to NEAREST built building; else mine nearest ore.
     // Hauling to the nearest drop-off (not one fixed building) is what makes
@@ -337,31 +347,51 @@ fn colony_logic(out: &mut Out) {
         // Rush the first refinery onto the deposit nearest the spawner: harvesters
         // start at (0,0), so the first drop-off wants to be close AND on the ore.
         if !refinery_building && goods >= REFINERY_COST {
-            let (px, py) = pick_refinery_cell(bld, n_bld, dep, n_dep, spawner_x, spawner_y, refineries);
+            let (found, dx, dy) = pick_uncovered_deposit(bld, n_bld, dep, n_dep, spawner_x, spawner_y, 0);
+            let (px, py) = if found { (dx, dy) } else { (spawner_x + 1, spawner_y) };
             out.push(OP_BUILD, 0, BLD_REFINERY as i32, ((px << 8) | py) as i32);
         }
         return; // no spawning/launching until the forge is multiplied
     }
 
-    // Fill the harvester cap (cheap, lifts ore delivery). n_units is live-only, so
-    // an over-emit while a spawn is in flight is just rejected by the pop cap.
-    if n_units < POP_CAP && goods >= 20 {
+    // Growth targets. A real boom needs us to keep INVESTING instead of launching
+    // every last good, so during build-out we reserve goods for the next step and
+    // launch only the surplus; once built out the reserve is 0 → launch everything.
+    let want_spawner_upg = spawner_level < MAX_SPAWNER_LEVEL && n_units >= pop_cap;
+    let upg_cost = UPGRADE_BASE * (spawner_level + 1);
+    // a refinery only earns its 40 goods if it covers ground no drop-off reaches —
+    // a deposit more than 2 cells from every building.
+    let (cov_found, cov_x, cov_y) = pick_uncovered_deposit(bld, n_bld, dep, n_dep, spawner_x, spawner_y, 2);
+    let want_refinery = cov_found && !refinery_building && refineries < MAX_REFINERIES;
+
+    // 1. fill the harvester cap (cheap, the direct lever on ore delivery).
+    if n_units < pop_cap && goods >= 20 {
         out.push(OP_SPAWN, 0, UNIT_HARVESTER as i32, 0);
     }
 
-    // Add refineries only while ore is genuinely piling (supply outruns the current
-    // throughput) — that's the early burst, when faster conversion = more convoys.
-    if !refinery_building && refineries < MAX_REFINERIES && goods >= REFINERY_COST {
-        let surplus = if refineries == 1 { 25 } else { 50 };
-        if ore >= surplus {
-            let (px, py) = pick_refinery_cell(bld, n_bld, dep, n_dep, spawner_x, spawner_y, refineries);
-            out.push(OP_BUILD, 0, BLD_REFINERY as i32, ((px << 8) | py) as i32);
-        }
+    // 2. THE BOOM: with the fleet full, upgrade the spawner for a higher pop cap →
+    // more miners. Delivery (not throughput) is the wall, so more harvesters is the
+    // only way through it. Cost scales (30, 60, ...) so it self-paces.
+    if want_spawner_upg && goods >= upg_cost {
+        out.push(OP_UPGRADE, spawner_id, 0, 0);
     }
 
-    // Launch every spare 20 goods — flood the board (deliveries + hunters). Emitted
-    // last, so spawns/builds are funded first; the sim caps the rest by goods.
-    let mut launches = goods / SHIPMENT_SIZE;
+    // 3. coverage refinery: another drop-off out where harvesters currently haul far.
+    if want_refinery && goods >= REFINERY_COST {
+        out.push(OP_BUILD, 0, BLD_REFINERY as i32, ((cov_x << 8) | cov_y) as i32);
+    }
+
+    // 4. launch the surplus above what we're saving for the next growth step. While
+    // building out we hold a reserve so goods can climb to an upgrade/refinery cost;
+    // fully grown, reserve is 0 and every spare 20 goods floods a convoy + hunter.
+    let reserve = if want_spawner_upg {
+        upg_cost
+    } else if want_refinery {
+        REFINERY_COST
+    } else {
+        0
+    };
+    let mut launches = goods.saturating_sub(reserve) / SHIPMENT_SIZE;
     if launches > 4 {
         launches = 4;
     }
@@ -370,19 +400,20 @@ fn colony_logic(out: &mut Out) {
     }
 }
 
-// Pick a build cell for the next refinery: the deposit nearest the spawner that
-// has ore and no building within distance 1 (so refineries spread across the
-// field instead of stacking). Build ON the deposit → harvesters mine + transfer
-// in place for ~zero haul until it depletes. Fallback: a cell beside the spawner.
-fn pick_refinery_cell(
+// Find a build cell for a refinery: the deposit nearest the spawner whose closest
+// building is more than `min_clearance` cells away (so we put it ON ore that no
+// existing drop-off covers). Build ON the deposit → harvesters mine + transfer in
+// place for ~zero haul until it depletes. Returns (found, x, y); `found = false`
+// means there's no uncovered deposit worth a refinery right now.
+fn pick_uncovered_deposit(
     bld: usize,
     n_bld: usize,
     dep: usize,
     n_dep: usize,
     spawner_x: u32,
     spawner_y: u32,
-    refineries: u32,
-) -> (u32, u32) {
+    min_clearance: u32,
+) -> (bool, u32, u32) {
     let mut best = u32::MAX;
     let mut bx = 0;
     let mut by = 0;
@@ -395,16 +426,16 @@ fn pick_refinery_cell(
         if amt == 0 {
             continue;
         }
-        // reject deposits that already have a building on/next to them
-        let mut blocked = false;
+        // distance to the nearest building — skip deposits already covered
+        let mut nearest_b = u32::MAX;
         for b in 0..n_bld {
             let ob = bld + b * BLD_SZ;
-            if manhattan(dx, dy, rd_u8(ob + 5), rd_u8(ob + 6)) <= 1 {
-                blocked = true;
-                break;
+            let m = manhattan(dx, dy, rd_u8(ob + 5), rd_u8(ob + 6));
+            if m < nearest_b {
+                nearest_b = m;
             }
         }
-        if blocked {
+        if nearest_b <= min_clearance {
             continue;
         }
         let dist = manhattan(spawner_x, spawner_y, dx, dy);
@@ -415,11 +446,5 @@ fn pick_refinery_cell(
             found = true;
         }
     }
-    if found {
-        (bx, by)
-    } else {
-        // no free deposit — drop it beside the spawner (offset by count so each is
-        // a distinct, in-grid cell).
-        (spawner_x + 1 + refineries, spawner_y)
-    }
+    (found, bx, by)
 }

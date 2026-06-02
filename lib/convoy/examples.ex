@@ -80,7 +80,7 @@ defmodule Convoy.Examples do
       seeded?: false,
       tagline: "Economy + raid (PvP)",
       blurb:
-        "A robber baron: builds the biggest economy the rules allow, then raids with the surplus. Places refineries right on the ore so the 4-harvester cap hauls almost nothing, fills the cap, and launches every spare 20 goods — then steers those convoys with the Raider's diagonal intercept to rob rivals on the way to market. Tops both throughput and seizes; field it to dominate a crowded board."
+        "A robber baron: builds the biggest economy the rules allow, then raids with the surplus. Places refineries right on the ore so harvesters barely haul, upgrades the spawner to field more miners than the base cap, spreads coverage refineries across the field, and reinvests instead of cashing out every good — then launches the surplus as convoys and steers them with the Raider's diagonal intercept to rob rivals en route. Booms to the ore-supply ceiling and tops both throughput and seizes; field it to dominate a crowded board."
     }
   ]
 

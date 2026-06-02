@@ -51,6 +51,17 @@ defmodule Convoy.Engine.Colony.World do
     spawn_time_harvester: 8,
     pop_cap_base: 4,
     pop_cap_step: 2,
+    # upgrades (OP_UPGRADE / op 6): raise a finished building's level — a spawner
+    # level lifts the pop cap (pop_cap_step), a refinery level lifts refine
+    # throughput (refine_rate). Time+cost gated like everything else: cost scales
+    # with the current level (base * (level+1)) so the boom self-paces; time is
+    # flat. Capped at `max_level`. The building keeps working at its old level
+    # while the upgrade is in flight.
+    upgrade_cost_spawner: 30,
+    upgrade_time_spawner: 25,
+    upgrade_cost_refinery: 30,
+    upgrade_time_refinery: 25,
+    max_level: 4,
     # convoys: goods spent to load one, credits a delivered shipment earns
     shipment_size: 20,
     shipment_value: 30,
@@ -179,6 +190,14 @@ defmodule Convoy.Engine.Colony.World do
   def spawn_spec(%World{} = w, @unit_harvester), do: {cfg(w, :spawn_cost_harvester), cfg(w, :spawn_time_harvester)}
   def spawn_spec(_w, _kind), do: nil
 
+  @doc "Base goods cost + time to upgrade a building kind (nil if not upgradeable). Actual cost scales: base * (level+1)."
+  def upgrade_spec(%World{} = w, @bld_spawner), do: {cfg(w, :upgrade_cost_spawner), cfg(w, :upgrade_time_spawner)}
+  def upgrade_spec(%World{} = w, @bld_refinery), do: {cfg(w, :upgrade_cost_refinery), cfg(w, :upgrade_time_refinery)}
+  def upgrade_spec(_w, _kind), do: nil
+
+  @doc "Highest level a building can reach."
+  def max_level(%World{} = w), do: cfg(w, :max_level)
+
   @doc "Goods to load a convoy + credits a delivered shipment earns."
   def shipment_size(%World{} = w), do: cfg(w, :shipment_size)
   def shipment_value(%World{} = w), do: cfg(w, :shipment_value)
@@ -224,6 +243,9 @@ defmodule Convoy.Engine.Colony.World do
   @doc "Enqueue a unit spawn (built after `time` ticks). Caller already validated cost/cap."
   def enqueue_spawn(%World{} = w, kind, time), do: %{w | spawn_queue: w.spawn_queue ++ [%{kind: kind, remaining: time}]}
 
+  @doc "Begin a level upgrade on a finished building: it keeps working at its current level until `time` ticks elapse. Caller already validated cost/level/idle."
+  def start_upgrade(%World{} = w, id, time), do: update_building(w, id, &%{&1 | remaining: time})
+
   def spend_goods(%World{} = w, n), do: %{w | goods: max(w.goods - n, 0)}
 
   def note(%World{} = w, nil), do: w
@@ -237,7 +259,7 @@ defmodule Convoy.Engine.Colony.World do
   for cold regions (primer §5).
   """
   def advance(%World{} = w) do
-    w |> tick_construction() |> tick_spawns() |> refine()
+    w |> tick_construction() |> tick_upgrades() |> tick_spawns() |> refine()
   end
 
   defp tick_construction(%World{buildings: bs} = w) do
@@ -252,6 +274,23 @@ defmodule Convoy.Engine.Colony.World do
 
     w = %{w | buildings: bs2}
     Enum.reduce(done, w, fn b, acc -> note(acc, "#{kind_name(b.kind)} finished at (#{b.x},#{b.y}).") end)
+  end
+
+  # A finished building with an upgrade in flight (built + remaining > 0) keeps
+  # operating at its current level until the timer elapses, then gains a level.
+  defp tick_upgrades(%World{buildings: bs} = w) do
+    {bs2, done} =
+      Enum.map_reduce(bs, [], fn b, acc ->
+        cond do
+          not b.built -> {b, acc}
+          b.remaining <= 0 -> {b, acc}
+          b.remaining <= 1 -> {%{b | level: b.level + 1, remaining: 0}, [b | acc]}
+          true -> {%{b | remaining: b.remaining - 1}, acc}
+        end
+      end)
+
+    w = %{w | buildings: bs2}
+    Enum.reduce(done, w, fn b, acc -> note(acc, "#{kind_name(b.kind)} upgraded to level #{b.level + 1} at (#{b.x},#{b.y}).") end)
   end
 
   defp tick_spawns(%World{spawn_queue: q} = w) do

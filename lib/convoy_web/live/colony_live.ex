@@ -636,6 +636,7 @@ defmodule ConvoyWeb.ColonyLive do
             <.action_row op="3" sig="transfer(unit, building)">dump <code>unit</code>'s cargo into an adjacent built building</.action_row>
             <.action_row op="4" sig="build(kind, x«8|y)">queue a building at packed coords (spends goods)</.action_row>
             <.action_row op="5" sig="spawn(kind)">queue a unit at the spawner (spends goods, pop-capped)</.action_row>
+            <.action_row op="6" sig="upgrade(building)">raise a finished building's level (spends goods, time-gated) — a spawner lifts the pop cap, a refinery lifts throughput</.action_row>
             <.action_row op="7" sig="launch_convoy">load a convoy and send it into the market</.action_row>
             <.action_row op="8" sig="defend(convoy)">hold position; an escort — seizes a <em>hunter</em> sharing its cell, but lets passive convoys pass</.action_row>
             <.action_row op="9" sig="hunt(convoy, dx, dy)">raider stance; steer one cell by sign(dx/dy) (or 0,0 to auto-home). Seizes a passive convoy you land on — but loses your cargo to a defender there</.action_row>
