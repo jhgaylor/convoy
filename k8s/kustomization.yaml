@@ -7,7 +7,6 @@ resources:
   # Runtime secrets come from the self-hosted Infisical (magpie). The operator
   # authenticates with the SOPS-encrypted machine-identity creds and
   # materializes the `convoy-secrets` Secret the Deployment consumes.
-  - convoy-infisical-auth.enc.yaml
   - infisicalsecret.yaml
   - deployment.yaml
   - service.yaml
